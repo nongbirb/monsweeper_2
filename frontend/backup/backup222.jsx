@@ -483,192 +483,139 @@ function App() {
   const isGameControlsEnabled = authenticated && isWalletReady && !isTransactionPending;
 
   return (
-    <div className="min-h-screen min-w-screen w-full h-full bg-gray-900 flex flex-col justify-center items-center">
-      <div className="w-full max-w-2xl bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl border border-white/20">
-        <h1 className="text-5xl font-bold mb-8 text-center bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-          Monsweeper 💣
-        </h1>
-        
-        {user && authenticated ? (
-          <div className="text-center mb-6">
-            <button 
-              onClick={logout} 
-              className="bg-white/20 backdrop-blur-sm text-white font-semibold py-2 px-6 rounded-full border border-white/30 hover:bg-white/30 transition-all duration-200 mb-3"
-              disabled={isTransactionPending}
-            >
-              Disconnect
-            </button>
-            <p className="text-white/80 text-sm">Connected: {user?.wallet?.address?.slice(0, 6)}...{user?.wallet?.address?.slice(-4)}</p>
-          </div>
-        ) : (
-          <div className="text-center mb-6">
-            <button 
-              onClick={login} 
-              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold py-3 px-8 rounded-full hover:from-purple-600 hover:to-pink-600 transition-all duration-200 shadow-lg"
-            >
-              Connect Wallet
-            </button>
-          </div>
-        )}
-
-        {authenticated && (
-          <div className="space-y-6">
-            <div className="text-center">
-              <p className="text-white/90 mb-4 font-medium">Select Bet Amount:</p>
-              <div className="flex flex-wrap justify-center gap-3">
-                {["0.01", "0.1", "1", "3", "5", "10"].map(amount => (
-                  <button
-                    key={amount}
-                    onClick={() => selectBet(amount)}
-                    className={`py-2 px-4 rounded-full font-semibold transition-all duration-200 border-2
-                      ${selectedBet === amount 
-                        ? "bg-white text-purple-900 border-white shadow-lg" 
-                        : "bg-white/10 text-white border-white/30 hover:bg-white/20 hover:border-white/50"
-                      }
-                      ${(gameActive || isTransactionPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-                    disabled={gameActive || isTransactionPending}
-                  >
-                    {amount} MON
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="text-center space-y-3">
-              <button
-                onClick={handleStartGame}
-                className={`w-full max-w-xs bg-gradient-to-r from-green-500 to-emerald-500 text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-lg hover:from-green-600 hover:to-emerald-600
-                  ${(!isGameControlsEnabled || gameActive) ? "opacity-50 cursor-not-allowed" : "hover:scale-105"}`}
-                disabled={!isGameControlsEnabled || gameActive}
-              >
-                {isTransactionPending ? "Starting..." : "Start Game"}
-              </button>
-              
-              <button
-                onClick={handleCashOut}
-                className={`w-full max-w-xs bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-lg hover:from-yellow-600 hover:to-orange-600
-                  ${(!isGameControlsEnabled || !gameActive || tilesClicked === 0) ? "opacity-50 cursor-not-allowed" : "hover:scale-105"}`}
-                disabled={!isGameControlsEnabled || !gameActive || tilesClicked === 0}
-              >
-                {isTransactionPending ? "Cashing..." : `Cash Out (${(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON)`}
-              </button>
-            </div>
-
-            {(gameActive || revealedTiles.some(tile => tile)) && (
-              <div className="mt-8">
-                <h3 className="text-2xl mb-6 text-center text-white font-semibold">
-                  {gameEndedWithBomb ? "💥 Game Over" : "🎮 Game Board"}
-                </h3>
-                <div className="flex justify-center">
-                  <div 
-                    className="grid gap-2 bg-white/10 backdrop-blur-sm p-4 rounded-2xl border border-white/20"
-                    style={{ 
-                      gridTemplateColumns: 'repeat(6, 1fr)', 
-                      maxWidth: '360px'
-                    }}
-                  >
-                    {tiles.map((tile, i) => {
-                      const isRevealed = revealedTiles[i];
-                      
-                      return (
-                        <div
-                          key={i}
-                          onClick={() => handleTileClick(i)}
-                          className={`flex items-center justify-center font-bold text-lg transition-all duration-200 border-2 rounded-xl
-                            ${!isRevealed 
-                              ? "bg-white/20 text-white cursor-pointer hover:bg-white/30 active:scale-95 border-white/40" 
-                              : tile === 2
-                              ? "bg-gradient-to-br from-red-500 to-red-600 text-white animate-bounce border-red-400" 
-                              : "bg-gradient-to-br from-green-500 to-emerald-500 text-white animate-pulse border-green-400"
-                            }
-                            ${(!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? "cursor-not-allowed opacity-75" : ""}`}
-                          style={{ 
-                            width: '50px',
-                            height: '50px',
-                            pointerEvents: (!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? 'none' : 'auto' 
-                          }}
-                        >
-                          {isRevealed ? (tile === 2 ? "💣" : "✅") : (i + 1)}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {gameActive && (
-              <div className="mt-6 p-6 bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-                  <div>
-                    <p className="text-white/80 text-sm">Safe Tiles</p>
-                    <p className="text-2xl font-bold text-white">{tilesClicked}/27</p>
-                  </div>
-                  <div>
-                    <p className="text-white/80 text-sm">Multiplier</p>
-                    <p className="text-2xl font-bold text-green-400">{(calculateMultiplier(tilesClicked) * 0.95).toFixed(4)}x</p>
-                  </div>
-                  <div>
-                    <p className="text-white/80 text-sm">Potential Win</p>
-                    <p className="text-2xl font-bold text-yellow-400">{(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON</p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="mt-8 space-y-4 text-center">
-          <p className="text-lg text-white font-medium">{status}</p>
-          <div className="flex justify-center gap-6 text-sm">
-            <p className="text-green-400">📈 +{totalEarned.toFixed(4)} MON</p>
-            <p className="text-red-400">📉 -{totalLost.toFixed(4)} MON</p>
-          </div>
-          <p className="text-white/70 text-sm">
-            🎯 Find 27 safe tiles among 36. Avoid 9 bombs. Cash out anytime to secure winnings!
-          </p>
+    <div className="bg-[#836EF9] text-white text-center p-8 min-h-screen font-sans">
+      <h1 className="text-4xl mb-4">Monsweeper 💣</h1>
+      
+      {user && authenticated ? (
+        <div>
+          <button 
+            onClick={logout} 
+            className="bg-white text-[#836EF9] font-bold py-2 px-4 rounded-lg m-2"
+            disabled={isTransactionPending}
+          >
+            Logout
+          </button>
+          <p className="mb-4">Connected: {user?.wallet?.address?.slice(0, 6)}...{user?.wallet?.address?.slice(-4)}</p>
         </div>
+      ) : (
+        <button 
+          onClick={login} 
+          className="bg-white text-[#836EF9] font-bold py-2 px-4 rounded-lg m-2"
+        >
+          Connect Wallet
+        </button>
+      )}
 
-        {gameError && (
-          <div className="mt-6 p-4 bg-red-500/20 backdrop-blur-sm border border-red-400/30 rounded-2xl">
-            <p className="text-red-200 text-center">❌ Error: {gameErrorText}</p>
-            <div className="text-center mt-3">
-              <button 
-                onClick={() => {
-                  setGameError(false);
-                  setGameErrorText("");
-                }}
-                className="bg-red-500 text-white px-4 py-2 rounded-full text-sm hover:bg-red-600 transition-colors"
+      {authenticated && (
+        <div className="mt-4">
+          <div className="mb-4">
+            <p className="mb-2">Select Bet Amount:</p>
+            {["0.01", "0.1", "1"].map(amount => (
+              <button
+                key={amount}
+                onClick={() => selectBet(amount)}
+                className={`py-2 px-4 m-2 rounded-lg border-2 border-white font-bold transition-colors
+                  ${selectedBet === amount ? "bg-white text-[#836EF9]" : "bg-transparent text-white hover:bg-white hover:text-[#836EF9]"}
+                  ${(gameActive || isTransactionPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                disabled={gameActive || isTransactionPending}
               >
-                Dismiss
+                {amount} MON
               </button>
-            </div>
+            ))}
           </div>
-        )}
-      </div>
 
-      <div className="mt-8 text-center">
-        <p className="text-white/60 text-sm">
-          Made by{' '}
-          <a 
-            href="https://x.com/eric168eth" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="text-blue-400 hover:text-blue-300 transition-colors underline"
-          >
-            @eric168eth
-          </a>
-          {' '}and{' '}
-          <a 
-            href="https://x.com/0xbobaa" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="text-blue-400 hover:text-blue-300 transition-colors underline"
-          >
-            @0xbobaa
-          </a>
+          <div className="mb-4">
+            <button
+              onClick={handleStartGame}
+              className={`bg-white text-[#836EF9] font-bold py-2 px-6 rounded-lg m-2 transition-opacity
+                ${(!isGameControlsEnabled || gameActive) ? "opacity-50 cursor-not-allowed" : "hover:opacity-90"}`}
+              disabled={!isGameControlsEnabled || gameActive}
+            >
+              {isTransactionPending ? "Starting..." : "Start Game"}
+            </button>
+            
+            <button
+              onClick={handleCashOut}
+              className={`bg-green-500 text-white font-bold py-2 px-6 rounded-lg m-2 transition-opacity
+                ${(!isGameControlsEnabled || !gameActive || tilesClicked === 0) ? "opacity-50 cursor-not-allowed" : "hover:opacity-90"}`}
+              disabled={!isGameControlsEnabled || !gameActive || tilesClicked === 0}
+            >
+              {isTransactionPending ? "Cashing..." : `Cash Out (${(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON)`}
+            </button>
+          </div>
+
+          {(gameActive || revealedTiles.some(tile => tile)) && (
+            <div className="mt-6 mb-6">
+              <h3 className="text-xl mb-4">{gameEndedWithBomb ? "Game Over" : "Game Board"}</h3>
+              <div 
+                className="grid gap-2 justify-center mx-auto"
+                style={{ 
+                  gridTemplateColumns: 'repeat(6, 1fr)', 
+                  maxWidth: '300px',
+                  display: 'grid'
+                }}
+              >
+                {tiles.map((tile, i) => {
+                  const isRevealed = revealedTiles[i];
+                  
+                  return (
+                    <div
+                      key={i}
+                      onClick={() => handleTileClick(i)}
+                      className={`flex items-center justify-center font-bold text-lg transition-all duration-200 border-2 rounded-md
+                        ${!isRevealed 
+                          ? "bg-gray-300 text-black cursor-pointer hover:bg-gray-200 active:scale-95 border-gray-500" 
+                          : tile === 2
+                          ? "bg-red-500 text-white animate-bounce border-red-700" 
+                          : "bg-green-500 text-white animate-pulse border-green-700"
+                        }
+                        ${(!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? "cursor-not-allowed opacity-75" : ""}`}
+                      style={{ 
+                        width: '45px',
+                        height: '45px',
+                        pointerEvents: (!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? 'none' : 'auto' 
+                      }}
+                    >
+                      {isRevealed ? (tile === 2 ? "💣" : "✅") : i + 1}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {gameActive && (
+            <div className="mt-4 p-4 bg-white bg-opacity-20 rounded-lg">
+              <p>🎯 Safe Tiles: {tilesClicked}/27</p>
+              <p>📈 Current Multiplier: {(calculateMultiplier(tilesClicked) * 0.95).toFixed(4)}x</p>
+              <p>💎 Potential Win: {(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-6 space-y-2">
+        <p className="text-lg">{status}</p>
+        <p>📊 Total Earnings: +{totalEarned.toFixed(4)} MON | Total Losses: -{totalLost.toFixed(4)} MON</p>
+        <p className="text-sm opacity-80">
+          🎯 Find 27 safe tiles among 36. Avoid 9 bombs. Cash out anytime to secure winnings!
         </p>
       </div>
+
+      {gameError && (
+        <div className="mt-4 p-4 bg-red-500 bg-opacity-20 border border-red-300 rounded-lg">
+          <p className="text-red-200">❌ Error: {gameErrorText}</p>
+          <button 
+            onClick={() => {
+              setGameError(false);
+              setGameErrorText("");
+            }}
+            className="mt-2 bg-red-500 text-white px-3 py-1 rounded text-sm"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   );
 }
