@@ -14,12 +14,22 @@ const MONAD_TESTNET = {
 };
 
 const abi = [
-  "function startGame(uint256 seed) external payable returns (bytes32)",
+  "function startGame(bytes32 userCommitment, uint8 difficulty) external payable returns (bytes32)",
+  "function revealRandomnessAndPlay(bytes32 gameId, bytes32 userRandomness, bytes32 providerRevelation) external",
   "function submitMovesAndCashOut(bytes32 gameId, uint8[] calldata clickedTiles) external",
-  "event GameStarted(bytes32 gameId, address player, uint256 bet)",
+  "function getGameInfo(bytes32 gameId) view returns (address player, uint256 bet, bool active, bool randomnessRevealed, uint8[] clickedTiles, uint8 difficulty, uint256 startTimestamp)",
+  "function getPlayerStats(address player) view returns (uint256 totalEarned, uint256 totalLost, uint256 gamesPlayed, uint256 gamesWon)",
+  "function getPlayerActiveGameCount(address player) view returns (uint256)",
+  "function getPlayerActiveGames(address player) view returns (bytes32[])",
+  "function calculatePotentialReward(bytes32 gameId, uint8 additionalClicks) view returns (uint256)",
+  "function shouldForceCashout(bytes32 gameId, uint8 additionalClicks) view returns (bool, string)",
+  "function getMaxBetAllowed() view returns (uint256)",
+  "event GameStarted(bytes32 gameId, address player, uint256 bet, uint8 difficulty)",
+  "event RandomnessRequested(bytes32 gameId, uint64 sequenceNumber)",
+  "event RandomnessRevealed(bytes32 gameId, bytes32 randomValue)",
   "event CashedOut(bytes32 gameId, uint256 reward)",
   "event GameOver(bytes32 gameId)",
-  "function getGameInfo(bytes32 gameId) view returns (address player, uint256 seed, uint256 bet, bool active, uint8[] clickedTiles)"
+  "event ForcedCashout(bytes32 gameId, uint256 reward, string reason)"
 ];
 
 function useTransaction() {
@@ -28,16 +38,13 @@ function useTransaction() {
   const publicClient = useRef(null);
   const [isWalletReady, setIsWalletReady] = useState(false);
 
-  // Auto switch to Monad Testnet
   const switchToMonadTestnet = async (provider) => {
     try {
-      // Try to switch to Monad Testnet
       await provider.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: `0x${MONAD_TESTNET.id.toString(16)}` }],
       });
     } catch (switchError) {
-      // This error code indicates that the chain has not been added to MetaMask/Rabby
       if (switchError.code === 4902) {
         try {
           await provider.request({
@@ -97,7 +104,6 @@ function useTransaction() {
           throw new Error("No compatible provider found!");
         }
 
-        // Auto switch to Monad Testnet
         await switchToMonadTestnet(provider);
 
         walletClient.current = createWalletClient({
@@ -123,7 +129,6 @@ function useTransaction() {
       if (!walletClient.current || !publicClient.current) {
         throw new Error("Wallet client not initialized.");
       }
-
       if (!user?.wallet?.address) {
         throw new Error("User wallet address not available.");
       }
@@ -151,24 +156,116 @@ function useTransaction() {
 function App() {
   const { user, authenticated, login, logout } = usePrivy();
   const { walletClient, publicClient, sendTransactionAndConfirm, isWalletReady } = useTransaction();
-
+  
+  // Game state
   const [gameId, setGameId] = useState(null);
   const [gameActive, setGameActive] = useState(false);
-  const [tiles, setTiles] = useState(Array(36).fill(0)); // 0: unrevealed, 1: safe, 2: bomb
+  const [randomnessRevealed, setRandomnessRevealed] = useState(false);
+  const [tiles, setTiles] = useState(Array(36).fill(0));
   const [revealedTiles, setRevealedTiles] = useState(Array(36).fill(false));
   const [clickedTileSequence, setClickedTileSequence] = useState([]);
-  const [seed, setSeed] = useState(null);
+  const [userRandomness, setUserRandomness] = useState(null);
+  const [finalRandomness, setFinalRandomness] = useState(null);
   const [tilesClicked, setTilesClicked] = useState(0);
-  const [totalEarned, setTotalEarned] = useState(0);
-  const [totalLost, setTotalLost] = useState(0);
+  const [difficulty, setDifficulty] = useState(0); // 0 = NORMAL, 1 = GOD_OF_WAR
   const [selectedBet, setSelectedBet] = useState("0.01");
   const [status, setStatus] = useState("Status: Not connected");
   const [gameError, setGameError] = useState(false);
   const [gameErrorText, setGameErrorText] = useState("");
   const [isTransactionPending, setIsTransactionPending] = useState(false);
   const [gameEndedWithBomb, setGameEndedWithBomb] = useState(false);
+  
+  // PnL tracking (persistent)
+  const [playerStats, setPlayerStats] = useState({
+    totalEarned: 0,
+    totalLost: 0,
+    gamesPlayed: 0,
+    gamesWon: 0
+  });
+  
+  // Force cashout state
+  const [showForceCashoutModal, setShowForceCashoutModal] = useState(false);
+  const [forceCashoutReason, setForceCashoutReason] = useState("");
+  const [maxBetAllowed, setMaxBetAllowed] = useState("0");
 
   const contractInterface = useMemo(() => new ethers.Interface(abi), []);
+
+  // Load player stats on wallet connect
+  useEffect(() => {
+    if (authenticated && isWalletReady && user?.wallet?.address) {
+      loadPlayerStats();
+      loadMaxBetAllowed();
+    }
+  }, [authenticated, isWalletReady, user?.wallet?.address]);
+
+  const loadPlayerStats = async () => {
+    try {
+      if (!publicClient.current || !user?.wallet?.address) return;
+
+      const data = contractInterface.encodeFunctionData("getPlayerStats", [user.wallet.address]);
+      
+      const result = await publicClient.current.call({
+        to: contractAddress,
+        data: data
+      });
+
+      const decoded = contractInterface.decodeFunctionResult("getPlayerStats", result.data);
+      
+      setPlayerStats({
+        totalEarned: parseFloat(ethers.formatEther(decoded[0])),
+        totalLost: parseFloat(ethers.formatEther(decoded[1])),
+        gamesPlayed: Number(decoded[2]),
+        gamesWon: Number(decoded[3])
+      });
+    } catch (error) {
+      console.error("Error loading player stats:", error);
+    }
+  };
+
+  const loadMaxBetAllowed = async () => {
+    try {
+      if (!publicClient.current) return;
+
+      const data = contractInterface.encodeFunctionData("getMaxBetAllowed", []);
+      
+      const result = await publicClient.current.call({
+        to: contractAddress,
+        data: data
+      });
+
+      const decoded = contractInterface.decodeFunctionResult("getMaxBetAllowed", result.data);
+      setMaxBetAllowed(ethers.formatEther(decoded[0]));
+    } catch (error) {
+      console.error("Error loading max bet:", error);
+    }
+  };
+
+  const checkForForceCashout = async (additionalClicks = 0) => {
+    try {
+      if (!gameId || !publicClient.current) return;
+
+      const data = contractInterface.encodeFunctionData("shouldForceCashout", [gameId, additionalClicks]);
+      
+      const result = await publicClient.current.call({
+        to: contractAddress,
+        data: data
+      });
+
+      const decoded = contractInterface.decodeFunctionResult("shouldForceCashout", result.data);
+      const shouldForce = decoded[0];
+      const reason = decoded[1];
+
+      if (shouldForce) {
+        setForceCashoutReason(reason);
+        setShowForceCashoutModal(true);
+        return true;
+      }
+      return false;
+    } catch (error) {
+      console.error("Error checking force cashout:", error);
+      return false;
+    }
+  };
 
   useEffect(() => {
     if (!authenticated) {
@@ -180,82 +277,57 @@ function App() {
     }
   }, [authenticated, isWalletReady]);
 
-  // SECURITY: Only check individual tiles when clicked, don't pre-generate all bomb positions
-  const checkIfTileIsBomb = (position) => {
-    if (!seed) return false;
-    
+  const generateBombPositions = (randomness, numBombs) => {
     const bombPositions = new Set();
-    let currentSeed = BigInt(seed);
+    let currentSeed = BigInt(randomness);
+    let bombsPlaced = 0;
     let attempts = 0;
     
-    // Generate bomb positions one by one until we have 9 or find our position
-    while (bombPositions.size < 9 && attempts < 100) {
-      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
-        ["uint256", "uint256"], 
-        [currentSeed, bombPositions.size]
-      );
-      const hash = ethers.keccak256(encoded);
-      const pos = Number(BigInt(hash) % BigInt(36));
+    while (bombsPlaced < numBombs && attempts < 200) {
+      const hash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["uint256", "uint8", "uint8"], 
+        [currentSeed, bombsPlaced, attempts]
+      ));
+      const bombPos = Number(BigInt(hash) % BigInt(36));
       
-      // If this is the position we're checking and it's a bomb
-      if (pos === position && !bombPositions.has(pos)) {
-        return true;
+      if (!bombPositions.has(bombPos)) {
+        bombPositions.add(bombPos);
+        bombsPlaced++;
       }
       
-      bombPositions.add(pos);
-      
       currentSeed = BigInt(ethers.keccak256(
-        ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [currentSeed])
+        ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint8"], [currentSeed, attempts])
       ));
-      
       attempts++;
     }
     
-    return false;
+    return Array.from(bombPositions);
   };
 
-  // Only reveal all bombs when game ends with a bomb
+  const checkIfTileIsBomb = (position) => {
+    if (!finalRandomness) return false;
+    
+    const numBombs = difficulty === 1 ? 12 : 9;
+    const bombPositions = generateBombPositions(finalRandomness, numBombs);
+    return bombPositions.includes(position);
+  };
+
   const revealAllBombs = () => {
-    if (!seed) return;
+    if (!finalRandomness) return;
     
-    const bombPositions = new Set();
-    let currentSeed = BigInt(seed);
-    let attempts = 0;
+    const numBombs = difficulty === 1 ? 12 : 9;
+    const bombPositions = generateBombPositions(finalRandomness, numBombs);
     
-    while (bombPositions.size < 9 && attempts < 100) {
-      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
-        ["uint256", "uint256"], 
-        [currentSeed, bombPositions.size]
-      );
-      const hash = ethers.keccak256(encoded);
-      const pos = Number(BigInt(hash) % BigInt(36));
-      
-      bombPositions.add(pos);
-      
-      currentSeed = BigInt(ethers.keccak256(
-        ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [currentSeed])
-      ));
-      
-      attempts++;
-    }
-    
-    // Update tiles to show all bombs
     const updatedTiles = [...tiles];
     const updatedRevealed = [...revealedTiles];
     
     bombPositions.forEach(pos => {
-      updatedTiles[pos] = 2; // Mark as bomb
-      updatedRevealed[pos] = true; // Reveal it
+      updatedTiles[pos] = 2;
+      updatedRevealed[pos] = true;
     });
     
     setTiles(updatedTiles);
     setRevealedTiles(updatedRevealed);
-  };
-
-  // SECURITY FIX: Initialize board without revealing bomb positions
-  const initializeBoard = () => {
-    // Don't reveal bomb positions - just create empty board
-    return Array(36).fill(0); // All tiles start as unrevealed
   };
 
   const handleStartGame = async () => {
@@ -274,18 +346,29 @@ function App() {
         return;
       }
 
+      // Check max bet allowed
+      const maxBet = parseFloat(maxBetAllowed);
+      if (parseFloat(selectedBet) > maxBet) {
+        setStatus(`❌ Bet exceeds maximum allowed: ${maxBet.toFixed(4)} MON`);
+        return;
+      }
+
       setStatus("🎲 Starting game...");
 
-      const newSeed = Math.floor(Math.random() * 1e9);
-      setSeed(newSeed);
+      // Generate user randomness for Pyth Entropy commitment
+      const newUserRandomness = ethers.randomBytes(32);
+      setUserRandomness(ethers.hexlify(newUserRandomness));
+
+      // Create commitment
+      const userCommitment = ethers.keccak256(newUserRandomness);
 
       const betValue = ethers.parseEther(selectedBet);
-      const data = contractInterface.encodeFunctionData("startGame", [newSeed]);
+      const data = contractInterface.encodeFunctionData("startGame", [userCommitment, difficulty]);
 
       const txHash = await sendTransactionAndConfirm({
         to: contractAddress,
         data,
-        gas: 300000,
+        gas: 500000, // Increased gas for entropy operations
         value: betValue,
       });
 
@@ -311,16 +394,21 @@ function App() {
       const receivedGameId = gameStartedEvent.args.gameId;
       setGameId(receivedGameId);
       setGameActive(true);
+      setRandomnessRevealed(false);
       setTilesClicked(0);
       setClickedTileSequence([]);
-      
-      // SECURITY FIX: Don't reveal bomb positions in frontend
-      setTiles(initializeBoard()); // Empty board without bomb positions
+      setTiles(Array(36).fill(0));
       setRevealedTiles(Array(36).fill(false));
       setGameEndedWithBomb(false);
-      setTotalLost(prev => prev + parseFloat(selectedBet));
 
-      setStatus(`🎮 Game Started! ID: ${receivedGameId.slice(0, 10)}...`);
+      // Update local stats (will be synced after game ends)
+      setPlayerStats(prev => ({
+        ...prev,
+        totalLost: prev.totalLost + parseFloat(selectedBet),
+        gamesPlayed: prev.gamesPlayed + 1
+      }));
+
+      setStatus(`🎮 Game Started! Now reveal randomness to play. ID: ${receivedGameId.slice(0, 10)}...`);
     } catch (err) {
       console.error("Error starting game:", err);
       setGameError(true);
@@ -331,10 +419,72 @@ function App() {
     }
   };
 
-  const handleTileClick = (pos) => {
-    if (!gameActive || revealedTiles[pos] || isTransactionPending) return;
+  const handleRevealRandomness = async () => {
+    try {
+      setIsTransactionPending(true);
+      setStatus("🔓 Revealing randomness...");
 
-    // Check if this tile is a bomb using the same logic as the contract
+      if (!gameId || !userRandomness) {
+        throw new Error("Game not properly initialized");
+      }
+
+      // For this demo, we'll use a placeholder provider revelation
+      // In production, this would come from the Pyth Entropy provider
+      const providerRevelation = ethers.randomBytes(32);
+
+      const data = contractInterface.encodeFunctionData("revealRandomnessAndPlay", [
+        gameId,
+        userRandomness,
+        ethers.hexlify(providerRevelation)
+      ]);
+
+      const txHash = await sendTransactionAndConfirm({
+        to: contractAddress,
+        data,
+        gas: 300000,
+      });
+
+      setStatus(`🔄 Revealing... Hash: ${txHash.slice(0, 10)}...`);
+
+      const receipt = await publicClient.current.waitForTransactionReceipt({ hash: txHash });
+
+      const parsedLogs = receipt.logs
+        .map(log => {
+          try {
+            return contractInterface.parseLog(log);
+          } catch (e) {
+            return null;
+          }
+        })
+        .filter(log => log !== null);
+
+      const randomnessRevealedEvent = parsedLogs.find(e => e.name === "RandomnessRevealed");
+      if (randomnessRevealedEvent) {
+        setFinalRandomness(randomnessRevealedEvent.args.randomValue);
+        setRandomnessRevealed(true);
+        setStatus("🎯 Randomness revealed! Click tiles to play!");
+      } else {
+        throw new Error("RandomnessRevealed event not found");
+      }
+    } catch (err) {
+      console.error("Error revealing randomness:", err);
+      setGameError(true);
+      setGameErrorText(err.message);
+      setStatus(`❌ Failed to reveal: ${err.message}`);
+    } finally {
+      setIsTransactionPending(false);
+    }
+  };
+
+  const handleTileClick = async (pos) => {
+    if (!gameActive || !randomnessRevealed || revealedTiles[pos] || isTransactionPending) return;
+
+    // Check for force cashout before allowing the move
+    const shouldForce = await checkForForceCashout(1);
+    if (shouldForce) {
+      return; // Don't allow the move, force cashout modal will show
+    }
+
     const isBomb = checkIfTileIsBomb(pos);
     
     const updatedRevealed = [...revealedTiles];
@@ -344,32 +494,32 @@ function App() {
     const updatedTiles = [...tiles];
     
     if (isBomb) {
-      // Player hit a bomb - game over
-      updatedTiles[pos] = 2; // Mark as bomb
+      updatedTiles[pos] = 2;
       setTiles(updatedTiles);
-      
-      // Reveal all bombs for visual feedback
       revealAllBombs();
-      
       setGameActive(false);
       setGameEndedWithBomb(true);
       setStatus("💥 Bomb! Game Over");
+      await loadPlayerStats(); // Refresh stats
       return;
     }
 
-    // Safe tile
-    updatedTiles[pos] = 1; // Mark as safe
+    updatedTiles[pos] = 1;
     setTiles(updatedTiles);
     
     setTilesClicked(prev => prev + 1);
     setClickedTileSequence(prev => [...prev, pos]);
 
-    const multiplier = calculateMultiplier(tilesClicked + 1) * 0.95;
-    setStatus(`✅ Safe! Tiles: ${tilesClicked + 1} | Multiplier: ${multiplier.toFixed(4)}x`);
+    const numBombs = difficulty === 1 ? 12 : 9;
+    const multiplier = calculateMultiplier(tilesClicked + 1, numBombs);
+    const godOfWarBonus = difficulty === 1 ? 1.5 : 1;
+    const finalMultiplier = multiplier * godOfWarBonus * 0.95;
+
+    setStatus(`✅ Safe! Tiles: ${tilesClicked + 1} | Multiplier: ${finalMultiplier.toFixed(4)}x`);
   };
 
   const handleCashOut = async () => {
-    if (!gameActive || tilesClicked === 0 || isTransactionPending) {
+    if (!gameActive || !randomnessRevealed || tilesClicked === 0 || isTransactionPending) {
       setStatus("❌ Cannot cash out now");
       return;
     }
@@ -383,14 +533,6 @@ function App() {
       setIsTransactionPending(true);
       setStatus("💰 Cashing out...");
 
-      // SECURITY FIX: Only log non-sensitive debug info
-      console.log("--- Cashout Debug ---");
-      console.log("Game ID:", gameId);
-      console.log("Clicked tile sequence:", clickedTileSequence);
-      console.log("Number of safe moves:", clickedTileSequence.length);
-      console.log("Player address:", user?.wallet?.address);
-      console.log("--- End Debug ---");
-
       const data = contractInterface.encodeFunctionData("submitMovesAndCashOut", [gameId, clickedTileSequence]);
       
       const txHash = await sendTransactionAndConfirm({
@@ -402,17 +544,13 @@ function App() {
       setStatus(`🔄 Processing cashout... Hash: ${txHash.slice(0, 10)}...`);
 
       const receipt = await publicClient.current.waitForTransactionReceipt({ hash: txHash });
-      
-      console.log("Transaction status:", receipt.status === 1n ? "Success" : "Reverted");
-      
+
       if (receipt.status === 0n) {
-        // Transaction reverted - this means we hit a bomb or other contract logic failed
         setGameActive(false);
         setGameEndedWithBomb(true);
         setStatus("💥 Game Over - You hit a bomb!");
-        
-        // Don't reveal bomb positions even on game over
         setClickedTileSequence([]);
+        await loadPlayerStats();
         return;
       }
 
@@ -427,6 +565,7 @@ function App() {
         .filter(log => log !== null);
 
       const cashedOutEvent = parsedLogs.find(e => e.name === "CashedOut");
+      const forcedCashoutEvent = parsedLogs.find(e => e.name === "ForcedCashout");
       const gameOverEvent = parsedLogs.find(e => e.name === "GameOver");
 
       if (gameOverEvent) {
@@ -434,27 +573,38 @@ function App() {
         setGameEndedWithBomb(true);
         setStatus("💥 Game Over (Contract Confirmed)");
         setClickedTileSequence([]);
+        await loadPlayerStats();
         return;
       }
 
-      if (!cashedOutEvent) {
-        const anyEvent = parsedLogs[0];
-        if (anyEvent) {
-          setGameActive(false);
-          setClickedTileSequence([]);
-          setGameEndedWithBomb(false);
-          setStatus("💰 Cashout completed");
-          return;
-        }
-        throw new Error("CashedOut event not found. Check contract events.");
+      let reward = 0;
+      let eventFound = false;
+
+      if (forcedCashoutEvent) {
+        reward = parseFloat(ethers.formatEther(forcedCashoutEvent.args.reward));
+        setStatus(`💰 Forced Cashout: ${reward.toFixed(4)} MON - ${forcedCashoutEvent.args.reason}`);
+        eventFound = true;
+      } else if (cashedOutEvent) {
+        reward = parseFloat(ethers.formatEther(cashedOutEvent.args.reward));
+        setStatus(`💰 Cashed Out: ${reward.toFixed(4)} MON`);
+        eventFound = true;
       }
 
-      const reward = parseFloat(ethers.formatEther(cashedOutEvent.args.reward));
-      setTotalEarned(prev => prev + reward);
+      if (eventFound) {
+        setPlayerStats(prev => ({
+          ...prev,
+          totalEarned: prev.totalEarned + reward,
+          gamesWon: prev.gamesWon + 1
+        }));
+      }
+
       setGameActive(false);
       setClickedTileSequence([]);
       setGameEndedWithBomb(false);
-      setStatus(`💰 Cashed Out: ${reward.toFixed(4)} MON`);
+      setShowForceCashoutModal(false);
+      
+      await loadPlayerStats(); // Refresh from contract
+      await loadMaxBetAllowed(); // Refresh max bet
     } catch (err) {
       console.error("Error cashing out:", err);
       setGameError(true);
@@ -465,12 +615,15 @@ function App() {
     }
   };
 
-  const calculateMultiplier = (safeClicks) => {
+  const calculateMultiplier = (safeClicks, numBombs = 9) => {
     let multiplier = 1.0;
+    const safeTiles = 36 - numBombs;
+    
     for (let i = 0; i < safeClicks; i++) {
-      const prob = (36 - 9 - i) / (36 - i);
+      const prob = (safeTiles - i) / (36 - i);
       multiplier *= (1 / prob);
     }
+    
     return multiplier;
   };
 
@@ -480,11 +633,23 @@ function App() {
     }
   };
 
+  const selectDifficulty = (diff) => {
+    if (!gameActive && !isTransactionPending) {
+      setDifficulty(diff);
+    }
+  };
+
   const isGameControlsEnabled = authenticated && isWalletReady && !isTransactionPending;
+  const numBombs = difficulty === 1 ? 12 : 9;
+  const maxSafeTiles = 36 - numBombs;
+  const currentMultiplier = calculateMultiplier(tilesClicked, numBombs);
+  const godOfWarBonus = difficulty === 1 ? 1.5 : 1;
+  const finalMultiplier = currentMultiplier * godOfWarBonus * 0.95;
+  const potentialWin = finalMultiplier * parseFloat(selectedBet);
 
   return (
     <div className="min-h-screen min-w-screen w-full h-full bg-gray-900 flex flex-col justify-center items-center">
-      <div className="w-full max-w-2xl bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl border border-white/20">
+      <div className="w-full max-w-4xl bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl border border-white/20">
         <h1 className="text-5xl font-bold mb-8 text-center bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
           Monsweeper 💣
         </h1>
@@ -499,6 +664,33 @@ function App() {
               Disconnect
             </button>
             <p className="text-white/80 text-sm">Connected: {user?.wallet?.address?.slice(0, 6)}...{user?.wallet?.address?.slice(-4)}</p>
+            
+            {/* Player Stats - Persistent PnL */}
+            <div className="mt-4 p-4 bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20">
+              <h3 className="text-lg font-semibold text-white mb-2">Your Stats</h3>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-center">
+                <div>
+                  <p className="text-white/80 text-sm">Net P&L</p>
+                  <p className={`text-lg font-bold ${(playerStats.totalEarned - playerStats.totalLost) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {(playerStats.totalEarned - playerStats.totalLost >= 0 ? '+' : '')}{(playerStats.totalEarned - playerStats.totalLost).toFixed(4)} MON
+                  </p>
+                </div>
+                <div>
+                  <p className="text-white/80 text-sm">Win Rate</p>
+                  <p className="text-lg font-bold text-blue-400">
+                    {playerStats.gamesPlayed > 0 ? ((playerStats.gamesWon / playerStats.gamesPlayed) * 100).toFixed(1) : 0}%
+                  </p>
+                </div>
+                <div>
+                  <p className="text-white/80 text-sm">Total Earned</p>
+                  <p className="text-lg font-bold text-green-400">+{playerStats.totalEarned.toFixed(4)} MON</p>
+                </div>
+                <div>
+                  <p className="text-white/80 text-sm">Games Won</p>
+                  <p className="text-lg font-bold text-white">{playerStats.gamesWon}/{playerStats.gamesPlayed}</p>
+                </div>
+              </div>
+            </div>
           </div>
         ) : (
           <div className="text-center mb-6">
@@ -513,16 +705,50 @@ function App() {
 
         {authenticated && (
           <div className="space-y-6">
+            {/* Difficulty Selection */}
             <div className="text-center">
-              <p className="text-white/90 mb-4 font-medium">Select Bet Amount:</p>
-              <div className="flex flex-wrap justify-center gap-3">
-                {["0.01", "0.1", "1", "3", "5", "10"].map(amount => (
+              <p className="text-white/90 mb-4 font-medium">Select Difficulty:</p>
+              <div className="flex justify-center gap-4">
+                <button
+                  onClick={() => selectDifficulty(0)}
+                  className={`py-3 px-6 rounded-full font-semibold transition-all duration-200 border-2
+                    ${difficulty === 0 
+                      ? "bg-blue-500 text-white border-blue-400 shadow-lg" 
+                      : "bg-white/10 text-white border-white/30 hover:bg-white/20 hover:border-white/50"
+                    }
+                    ${(gameActive || isTransactionPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                  disabled={gameActive || isTransactionPending}
+                >
+                  Normal Mode<br/>
+                  <span className="text-sm opacity-80">9 bombs</span>
+                </button>
+                <button
+                  onClick={() => selectDifficulty(1)}
+                  className={`py-3 px-6 rounded-full font-semibold transition-all duration-200 border-2
+                    ${difficulty === 1
+                      ? "bg-red-600 text-white border-red-400 shadow-lg"
+                      : "bg-white/10 text-white border-white/30 hover:bg-white/20 hover:border-white/50"
+                    }
+                    ${(gameActive || isTransactionPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                  disabled={gameActive || isTransactionPending}
+                >
+                  God of War<br/>
+                  <span className="text-sm opacity-80">12 bombs, 1.5x payout</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Bet Selection */}
+            <div className="text-center">
+              <p className="text-white/90 mb-4 font-medium">Select Bet:</p>
+              <div className="flex justify-center gap-4">
+                {["0.25", "0.5", "1", "3", "5", "10"].map((amount) => (
                   <button
                     key={amount}
                     onClick={() => selectBet(amount)}
-                    className={`py-2 px-4 rounded-full font-semibold transition-all duration-200 border-2
-                      ${selectedBet === amount 
-                        ? "bg-white text-purple-900 border-white shadow-lg" 
+                    className={`py-2 px-5 rounded-full font-semibold border-2 transition-all duration-200
+                      ${selectedBet === amount
+                        ? "bg-green-500 text-white border-green-400 shadow-lg"
                         : "bg-white/10 text-white border-white/30 hover:bg-white/20 hover:border-white/50"
                       }
                       ${(gameActive || isTransactionPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
@@ -532,142 +758,82 @@ function App() {
                   </button>
                 ))}
               </div>
+              <div className="mt-2 text-xs text-white/70">Max bet: {parseFloat(maxBetAllowed).toFixed(4)} MON</div>
             </div>
 
-            <div className="text-center space-y-3">
-              <button
-                onClick={handleStartGame}
-                className={`w-full max-w-xs bg-gradient-to-r from-green-500 to-emerald-500 text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-lg hover:from-green-600 hover:to-emerald-600
-                  ${(!isGameControlsEnabled || gameActive) ? "opacity-50 cursor-not-allowed" : "hover:scale-105"}`}
-                disabled={!isGameControlsEnabled || gameActive}
-              >
-                {isTransactionPending ? "Starting..." : "Start Game"}
-              </button>
-              
-              <button
-                onClick={handleCashOut}
-                className={`w-full max-w-xs bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-lg hover:from-yellow-600 hover:to-orange-600
-                  ${(!isGameControlsEnabled || !gameActive || tilesClicked === 0) ? "opacity-50 cursor-not-allowed" : "hover:scale-105"}`}
-                disabled={!isGameControlsEnabled || !gameActive || tilesClicked === 0}
-              >
-                {isTransactionPending ? "Cashing..." : `Cash Out (${(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON)`}
-              </button>
+            {/* Game Controls */}
+            <div className="flex flex-col items-center gap-4 mt-6">
+              {!gameActive && !randomnessRevealed && (
+                <button
+                  onClick={handleStartGame}
+                  className="bg-gradient-to-r from-green-500 to-blue-500 text-white font-bold py-3 px-10 rounded-full shadow-lg hover:from-green-600 hover:to-blue-600 transition-all duration-200"
+                  disabled={!isGameControlsEnabled}
+                >
+                  Start Game
+                </button>
+              )}
+              {gameActive && !randomnessRevealed && (
+                <button
+                  onClick={handleRevealRandomness}
+                  className="bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold py-3 px-10 rounded-full shadow-lg hover:from-yellow-600 hover:to-orange-600 transition-all duration-200"
+                  disabled={!isGameControlsEnabled}
+                >
+                  Reveal Randomness
+                </button>
+              )}
+              {gameActive && randomnessRevealed && (
+                <button
+                  onClick={handleCashOut}
+                  className="bg-gradient-to-r from-pink-500 to-purple-500 text-white font-bold py-3 px-10 rounded-full shadow-lg hover:from-pink-600 hover:to-purple-600 transition-all duration-200"
+                  disabled={!isGameControlsEnabled || tilesClicked === 0}
+                >
+                  Cash Out
+                </button>
+              )}
             </div>
 
-            {(gameActive || revealedTiles.some(tile => tile)) && (
-              <div className="mt-8">
-                <h3 className="text-2xl mb-6 text-center text-white font-semibold">
-                  {gameEndedWithBomb ? "💥 Game Over" : "🎮 Game Board"}
-                </h3>
-                <div className="flex justify-center">
-                  <div 
-                    className="grid gap-2 bg-white/10 backdrop-blur-sm p-4 rounded-2xl border border-white/20"
-                    style={{ 
-                      gridTemplateColumns: 'repeat(6, 1fr)', 
-                      maxWidth: '360px'
-                    }}
+            {/* Game Board */}
+            <div className="flex flex-col items-center mt-8">
+              <div className="grid grid-cols-6 gap-2">
+                {tiles.map((tile, idx) => (
+                  <button
+                    key={idx}
+                    className={`w-12 h-12 rounded-lg flex items-center justify-center text-lg font-bold border-2
+                      ${revealedTiles[idx]
+                        ? tile === 2
+                          ? "bg-red-600 text-white border-red-400"
+                          : "bg-green-400 text-white border-green-400"
+                        : "bg-gray-800 text-gray-400 border-gray-700 hover:bg-gray-700 hover:text-white"
+                      }
+                      ${(gameActive && randomnessRevealed && !revealedTiles[idx] && !showForceCashoutModal) ? "cursor-pointer" : "cursor-not-allowed"}`}
+                    disabled={!gameActive || !randomnessRevealed || revealedTiles[idx] || showForceCashoutModal}
+                    onClick={() => handleTileClick(idx)}
                   >
-                    {tiles.map((tile, i) => {
-                      const isRevealed = revealedTiles[i];
-                      
-                      return (
-                        <div
-                          key={i}
-                          onClick={() => handleTileClick(i)}
-                          className={`flex items-center justify-center font-bold text-lg transition-all duration-200 border-2 rounded-xl
-                            ${!isRevealed 
-                              ? "bg-white/20 text-white cursor-pointer hover:bg-white/30 active:scale-95 border-white/40" 
-                              : tile === 2
-                              ? "bg-gradient-to-br from-red-500 to-red-600 text-white animate-bounce border-red-400" 
-                              : "bg-gradient-to-br from-green-500 to-emerald-500 text-white animate-pulse border-green-400"
-                            }
-                            ${(!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? "cursor-not-allowed opacity-75" : ""}`}
-                          style={{ 
-                            width: '50px',
-                            height: '50px',
-                            pointerEvents: (!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? 'none' : 'auto' 
-                          }}
-                        >
-                          {isRevealed ? (tile === 2 ? "💣" : "✅") : (i + 1)}
-                        </div>
-                      );
-                    })}
+                    {revealedTiles[idx] ? (tile === 2 ? "💣" : "✔️") : ""}
+                  </button>
+                ))}
+              </div>
+              <div className="mt-4 text-white/80 text-lg font-semibold">{status}</div>
+              {gameError && <div className="mt-2 text-red-400 font-bold">{gameErrorText}</div>}
+              {gameEndedWithBomb && <div className="mt-2 text-red-400 font-bold">Game Over! You hit a bomb.</div>}
+              {showForceCashoutModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+                  <div className="bg-white rounded-2xl p-8 shadow-2xl max-w-md w-full text-center">
+                    <h2 className="text-2xl font-bold mb-4 text-red-600">Force Cashout Required</h2>
+                    <p className="mb-4 text-gray-800">{forceCashoutReason || "You have reached the maximum allowed reward for this game. Please cash out to continue playing."}</p>
+                    <button
+                      onClick={handleCashOut}
+                      className="bg-gradient-to-r from-pink-500 to-purple-500 text-white font-bold py-3 px-10 rounded-full shadow-lg hover:from-pink-600 hover:to-purple-600 transition-all duration-200"
+                      disabled={!isGameControlsEnabled || tilesClicked === 0}
+                    >
+                      Cash Out
+                    </button>
                   </div>
                 </div>
-              </div>
-            )}
-
-            {gameActive && (
-              <div className="mt-6 p-6 bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
-                  <div>
-                    <p className="text-white/80 text-sm">Safe Tiles</p>
-                    <p className="text-2xl font-bold text-white">{tilesClicked}/27</p>
-                  </div>
-                  <div>
-                    <p className="text-white/80 text-sm">Multiplier</p>
-                    <p className="text-2xl font-bold text-green-400">{(calculateMultiplier(tilesClicked) * 0.95).toFixed(4)}x</p>
-                  </div>
-                  <div>
-                    <p className="text-white/80 text-sm">Potential Win</p>
-                    <p className="text-2xl font-bold text-yellow-400">{(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON</p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="mt-8 space-y-4 text-center">
-          <p className="text-lg text-white font-medium">{status}</p>
-          <div className="flex justify-center gap-6 text-sm">
-            <p className="text-green-400">📈 +{totalEarned.toFixed(4)} MON</p>
-            <p className="text-red-400">📉 -{totalLost.toFixed(4)} MON</p>
-          </div>
-          <p className="text-white/70 text-sm">
-            🎯 Find 27 safe tiles among 36. Avoid 9 bombs. Cash out anytime to secure winnings!
-          </p>
-        </div>
-
-        {gameError && (
-          <div className="mt-6 p-4 bg-red-500/20 backdrop-blur-sm border border-red-400/30 rounded-2xl">
-            <p className="text-red-200 text-center">❌ Error: {gameErrorText}</p>
-            <div className="text-center mt-3">
-              <button 
-                onClick={() => {
-                  setGameError(false);
-                  setGameErrorText("");
-                }}
-                className="bg-red-500 text-white px-4 py-2 rounded-full text-sm hover:bg-red-600 transition-colors"
-              >
-                Dismiss
-              </button>
+              )}
             </div>
           </div>
         )}
-      </div>
-
-      <div className="mt-8 text-center">
-        <p className="text-white/60 text-sm">
-          Made by{' '}
-          <a 
-            href="https://x.com/eric168eth" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="text-blue-400 hover:text-blue-300 transition-colors underline"
-          >
-            @eric168eth
-          </a>
-          {' '}and{' '}
-          <a 
-            href="https://x.com/0xbobaa" 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="text-blue-400 hover:text-blue-300 transition-colors underline"
-          >
-            @0xbobaa
-          </a>
-        </p>
       </div>
     </div>
   );

@@ -28,6 +28,41 @@ function useTransaction() {
   const publicClient = useRef(null);
   const [isWalletReady, setIsWalletReady] = useState(false);
 
+  // Auto switch to Monad Testnet
+  const switchToMonadTestnet = async (provider) => {
+    try {
+      // Try to switch to Monad Testnet
+      await provider.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: `0x${MONAD_TESTNET.id.toString(16)}` }],
+      });
+    } catch (switchError) {
+      // This error code indicates that the chain has not been added to MetaMask/Rabby
+      if (switchError.code === 4902) {
+        try {
+          await provider.request({
+            method: 'wallet_addEthereumChain',
+            params: [
+              {
+                chainId: `0x${MONAD_TESTNET.id.toString(16)}`,
+                chainName: MONAD_TESTNET.name,
+                nativeCurrency: MONAD_TESTNET.nativeCurrency,
+                rpcUrls: MONAD_TESTNET.rpcUrls.default.http,
+                blockExplorerUrls: ['https://testnet-explorer.monad.xyz'],
+              },
+            ],
+          });
+        } catch (addError) {
+          console.error('Failed to add Monad Testnet:', addError);
+          throw addError;
+        }
+      } else {
+        console.error('Failed to switch to Monad Testnet:', switchError);
+        throw switchError;
+      }
+    }
+  };
+
   useEffect(() => {
     async function initWalletClient() {
       if (!ready || !user?.wallet?.address) {
@@ -61,6 +96,9 @@ function useTransaction() {
         if (!provider) {
           throw new Error("No compatible provider found!");
         }
+
+        // Auto switch to Monad Testnet
+        await switchToMonadTestnet(provider);
 
         walletClient.current = createWalletClient({
           chain: MONAD_TESTNET,
@@ -142,27 +180,82 @@ function App() {
     }
   }, [authenticated, isWalletReady]);
 
-  const initializeBoard = (initialSeed) => {
-    const newTiles = Array(36).fill(0);
+  // SECURITY: Only check individual tiles when clicked, don't pre-generate all bomb positions
+  const checkIfTileIsBomb = (position) => {
+    if (!seed) return false;
+    
     const bombPositions = new Set();
-    let currentSeed = BigInt(initialSeed);
-
-    // Match the contract's bomb placement logic exactly
-    for (let i = 0; i < 9; i++) {
-      // Use the same hash computation as the contract
-      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [currentSeed, i]);
+    let currentSeed = BigInt(seed);
+    let attempts = 0;
+    
+    // Generate bomb positions one by one until we have 9 or find our position
+    while (bombPositions.size < 9 && attempts < 100) {
+      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["uint256", "uint256"], 
+        [currentSeed, bombPositions.size]
+      );
       const hash = ethers.keccak256(encoded);
       const pos = Number(BigInt(hash) % BigInt(36));
       
-      // Update seed for next iteration (same as contract)
-      currentSeed = BigInt(ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [currentSeed])));
+      // If this is the position we're checking and it's a bomb
+      if (pos === position && !bombPositions.has(pos)) {
+        return true;
+      }
       
-      // In the contract, bombs are placed sequentially without checking for duplicates
-      // So we'll place them in the same positions as the contract would
-      newTiles[pos] = 2; // Mark as bomb
+      bombPositions.add(pos);
+      
+      currentSeed = BigInt(ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [currentSeed])
+      ));
+      
+      attempts++;
     }
+    
+    return false;
+  };
 
-    return newTiles;
+  // Only reveal all bombs when game ends with a bomb
+  const revealAllBombs = () => {
+    if (!seed) return;
+    
+    const bombPositions = new Set();
+    let currentSeed = BigInt(seed);
+    let attempts = 0;
+    
+    while (bombPositions.size < 9 && attempts < 100) {
+      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(
+        ["uint256", "uint256"], 
+        [currentSeed, bombPositions.size]
+      );
+      const hash = ethers.keccak256(encoded);
+      const pos = Number(BigInt(hash) % BigInt(36));
+      
+      bombPositions.add(pos);
+      
+      currentSeed = BigInt(ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [currentSeed])
+      ));
+      
+      attempts++;
+    }
+    
+    // Update tiles to show all bombs
+    const updatedTiles = [...tiles];
+    const updatedRevealed = [...revealedTiles];
+    
+    bombPositions.forEach(pos => {
+      updatedTiles[pos] = 2; // Mark as bomb
+      updatedRevealed[pos] = true; // Reveal it
+    });
+    
+    setTiles(updatedTiles);
+    setRevealedTiles(updatedRevealed);
+  };
+
+  // SECURITY FIX: Initialize board without revealing bomb positions
+  const initializeBoard = () => {
+    // Don't reveal bomb positions - just create empty board
+    return Array(36).fill(0); // All tiles start as unrevealed
   };
 
   const handleStartGame = async () => {
@@ -199,6 +292,7 @@ function App() {
       setStatus(`🔄 Transaction sent! Hash: ${txHash.slice(0, 10)}...`);
 
       const receipt = await publicClient.current.waitForTransactionReceipt({ hash: txHash });
+
       const parsedLogs = receipt.logs
         .map(log => {
           try {
@@ -210,7 +304,6 @@ function App() {
         .filter(log => log !== null);
 
       const gameStartedEvent = parsedLogs.find(e => e.name === "GameStarted");
-
       if (!gameStartedEvent) {
         throw new Error("GameStarted event not found.");
       }
@@ -220,13 +313,12 @@ function App() {
       setGameActive(true);
       setTilesClicked(0);
       setClickedTileSequence([]);
-      setTiles(initializeBoard(newSeed));
+      
+      // SECURITY FIX: Don't reveal bomb positions in frontend
+      setTiles(initializeBoard()); // Empty board without bomb positions
       setRevealedTiles(Array(36).fill(false));
       setGameEndedWithBomb(false);
       setTotalLost(prev => prev + parseFloat(selectedBet));
-
-      // Validate that our board matches the contract
-      validateBoardWithContract(newSeed);
 
       setStatus(`🎮 Game Started! ID: ${receivedGameId.slice(0, 10)}...`);
     } catch (err) {
@@ -242,31 +334,36 @@ function App() {
   const handleTileClick = (pos) => {
     if (!gameActive || revealedTiles[pos] || isTransactionPending) return;
 
-    const isLocalBomb = tiles[pos] === 2;
+    // Check if this tile is a bomb using the same logic as the contract
+    const isBomb = checkIfTileIsBomb(pos);
+    
     const updatedRevealed = [...revealedTiles];
     updatedRevealed[pos] = true;
     setRevealedTiles(updatedRevealed);
 
-    if (isLocalBomb) {
-      // Reveal all bomb tiles when game over
-      const allBombsRevealed = [...updatedRevealed];
-      tiles.forEach((tile, index) => {
-        if (tile === 2) { // If it's a bomb
-          allBombsRevealed[index] = true;
-        }
-      });
-      setRevealedTiles(allBombsRevealed);
+    const updatedTiles = [...tiles];
+    
+    if (isBomb) {
+      // Player hit a bomb - game over
+      updatedTiles[pos] = 2; // Mark as bomb
+      setTiles(updatedTiles);
+      
+      // Reveal all bombs for visual feedback
+      revealAllBombs();
       
       setGameActive(false);
-      setStatus("💥 Bomb! Game Over");
-      // Don't add bomb position to clickedTileSequence - contract expects only safe moves
       setGameEndedWithBomb(true);
+      setStatus("💥 Bomb! Game Over");
       return;
     }
 
-    // Only add safe moves to the sequence (contract expects only safe moves)
+    // Safe tile
+    updatedTiles[pos] = 1; // Mark as safe
+    setTiles(updatedTiles);
+    
     setTilesClicked(prev => prev + 1);
     setClickedTileSequence(prev => [...prev, pos]);
+
     const multiplier = calculateMultiplier(tilesClicked + 1) * 0.95;
     setStatus(`✅ Safe! Tiles: ${tilesClicked + 1} | Multiplier: ${multiplier.toFixed(4)}x`);
   };
@@ -286,73 +383,67 @@ function App() {
       setIsTransactionPending(true);
       setStatus("💰 Cashing out...");
 
-      // Only send safe moves to the contract (no bombs in the sequence)
-      const safeMoves = clickedTileSequence.filter(pos => tiles[pos] !== 2);
-
-      // Debug: Log the full board and moves
+      // SECURITY FIX: Only log non-sensitive debug info
       console.log("--- Cashout Debug ---");
       console.log("Game ID:", gameId);
-      console.log("Full board (tiles):", tiles);
       console.log("Clicked tile sequence:", clickedTileSequence);
-      console.log("Safe moves sequence:", safeMoves);
-      console.log("Number of safe moves:", safeMoves.length);
+      console.log("Number of safe moves:", clickedTileSequence.length);
       console.log("Player address:", user?.wallet?.address);
       console.log("--- End Debug ---");
 
-      const data = contractInterface.encodeFunctionData("submitMovesAndCashOut", [gameId, safeMoves]);
+      const data = contractInterface.encodeFunctionData("submitMovesAndCashOut", [gameId, clickedTileSequence]);
       
       const txHash = await sendTransactionAndConfirm({
         to: contractAddress,
         data,
-        gas: 300000 + safeMoves.length * 20000, // Adjust gas based on number of moves
+        gas: 300000 + clickedTileSequence.length * 20000,
       });
 
       setStatus(`🔄 Processing cashout... Hash: ${txHash.slice(0, 10)}...`);
 
       const receipt = await publicClient.current.waitForTransactionReceipt({ hash: txHash });
       
-      // Debug: Log transaction status
       console.log("Transaction status:", receipt.status === 1n ? "Success" : "Reverted");
-      console.log("Transaction logs:", receipt.logs);
       
-      // Check if transaction was successful
       if (receipt.status === 0n) {
-        throw new Error("Transaction reverted by smart contract. This usually means the contract logic failed.");
+        // Transaction reverted - this means we hit a bomb or other contract logic failed
+        setGameActive(false);
+        setGameEndedWithBomb(true);
+        setStatus("💥 Game Over - You hit a bomb!");
+        
+        // Don't reveal bomb positions even on game over
+        setClickedTileSequence([]);
+        return;
       }
-      
+
       const parsedLogs = receipt.logs
         .map(log => {
           try {
             return contractInterface.parseLog(log);
           } catch (e) {
-            console.log("Failed to parse log:", log, "Error:", e);
             return null;
           }
         })
         .filter(log => log !== null);
-
-      console.log("Parsed logs:", parsedLogs);
 
       const cashedOutEvent = parsedLogs.find(e => e.name === "CashedOut");
       const gameOverEvent = parsedLogs.find(e => e.name === "GameOver");
 
       if (gameOverEvent) {
         setGameActive(false);
+        setGameEndedWithBomb(true);
         setStatus("💥 Game Over (Contract Confirmed)");
         setClickedTileSequence([]);
         return;
       }
 
       if (!cashedOutEvent) {
-        // Try to find any event that might indicate success
         const anyEvent = parsedLogs[0];
         if (anyEvent) {
-          console.log("Found event but not CashedOut:", anyEvent);
-          // If we found some event, assume it was successful
           setGameActive(false);
           setClickedTileSequence([]);
           setGameEndedWithBomb(false);
-          setStatus("💰 Cashout completed (event details unclear)");
+          setStatus("💰 Cashout completed");
           return;
         }
         throw new Error("CashedOut event not found. Check contract events.");
@@ -383,37 +474,6 @@ function App() {
     return multiplier;
   };
 
-  const validateBoardWithContract = (seed) => {
-    const contractBoard = Array(36).fill(0);
-    let currentSeed = BigInt(seed);
-
-    // Generate board exactly as contract would
-    for (let i = 0; i < 9; i++) {
-      const encoded = ethers.AbiCoder.defaultAbiCoder().encode(["uint256", "uint256"], [currentSeed, i]);
-      const hash = ethers.keccak256(encoded);
-      const pos = Number(BigInt(hash) % BigInt(36));
-      currentSeed = BigInt(ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [currentSeed])));
-      contractBoard[pos] = 2;
-    }
-
-    // Compare with frontend board
-    const frontendBoard = tiles;
-    const mismatches = [];
-    for (let i = 0; i < 36; i++) {
-      if (frontendBoard[i] !== contractBoard[i]) {
-        mismatches.push({ position: i, frontend: frontendBoard[i], contract: contractBoard[i] });
-      }
-    }
-
-    if (mismatches.length > 0) {
-      console.warn("Board mismatch detected:", mismatches);
-    } else {
-      console.log("Board validation passed - frontend matches contract");
-    }
-
-    return mismatches.length === 0;
-  };
-
   const selectBet = (amount) => {
     if (!gameActive && !isTransactionPending) {
       setSelectedBet(amount);
@@ -422,163 +482,193 @@ function App() {
 
   const isGameControlsEnabled = authenticated && isWalletReady && !isTransactionPending;
 
-  async function debugGetGameInfo(gameId) {
-    if (!publicClient.current) {
-      console.log("No public client");
-      return;
-    }
-    try {
-      const data = contractInterface.encodeFunctionData("getGameInfo", [gameId]);
-      const result = await publicClient.current.call({
-        to: contractAddress,
-        data,
-      });
-      const hexData = result.data || result;
-      const [player, seed, bet, active, clickedTiles] = contractInterface.decodeFunctionResult("getGameInfo", hexData);
-      console.log("getGameInfo result:", { player, seed, bet, active, clickedTiles });
-    } catch (err) {
-      console.error("Error calling getGameInfo:", err);
-    }
-  }
-
-  // Make debugGetGameInfo available in the browser console
-  window.debugGetGameInfo = debugGetGameInfo;
-
   return (
-    <div className="bg-[#836EF9] text-white text-center p-8 min-h-screen font-sans">
-      <h1 className="text-4xl mb-4">Monsweeper 💣</h1>
-      
-      {user && authenticated ? (
-        <div>
-          <button 
-            onClick={logout} 
-            className="bg-white text-[#836EF9] font-bold py-2 px-4 rounded-lg m-2"
-            disabled={isTransactionPending}
-          >
-            Logout
-          </button>
-          <p className="mb-4">Connected: {user?.wallet?.address?.slice(0, 6)}...{user?.wallet?.address?.slice(-4)}</p>
-        </div>
-      ) : (
-        <button 
-          onClick={login} 
-          className="bg-white text-[#836EF9] font-bold py-2 px-4 rounded-lg m-2"
-        >
-          Connect Wallet
-        </button>
-      )}
-
-      {authenticated && (
-        <div className="mt-4">
-          <div className="mb-4">
-            <p className="mb-2">Select Bet Amount:</p>
-            {["0.01", "0.1", "1"].map(amount => (
-              <button
-                key={amount}
-                onClick={() => selectBet(amount)}
-                className={`py-2 px-4 m-2 rounded-lg border-2 border-white font-bold transition-colors
-                  ${selectedBet === amount ? "bg-white text-[#836EF9]" : "bg-transparent text-white hover:bg-white hover:text-[#836EF9]"}
-                  ${(gameActive || isTransactionPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
-                disabled={gameActive || isTransactionPending}
-              >
-                {amount} MON
-              </button>
-            ))}
-          </div>
-
-          <div className="mb-4">
-            <button
-              onClick={handleStartGame}
-              className={`bg-white text-[#836EF9] font-bold py-2 px-6 rounded-lg m-2 transition-opacity
-                ${(!isGameControlsEnabled || gameActive) ? "opacity-50 cursor-not-allowed" : "hover:opacity-90"}`}
-              disabled={!isGameControlsEnabled || gameActive}
+    <div className="min-h-screen min-w-screen w-full h-full bg-gray-900 flex flex-col justify-center items-center">
+      <div className="w-full max-w-2xl bg-white/10 backdrop-blur-lg rounded-3xl p-8 shadow-2xl border border-white/20">
+        <h1 className="text-5xl font-bold mb-8 text-center bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+          Monsweeper 💣
+        </h1>
+        
+        {user && authenticated ? (
+          <div className="text-center mb-6">
+            <button 
+              onClick={logout} 
+              className="bg-white/20 backdrop-blur-sm text-white font-semibold py-2 px-6 rounded-full border border-white/30 hover:bg-white/30 transition-all duration-200 mb-3"
+              disabled={isTransactionPending}
             >
-              {isTransactionPending ? "Starting..." : "Start Game"}
+              Disconnect
             </button>
-            
-            <button
-              onClick={handleCashOut}
-              className={`bg-green-500 text-white font-bold py-2 px-6 rounded-lg m-2 transition-opacity
-                ${(!isGameControlsEnabled || !gameActive || tilesClicked === 0) ? "opacity-50 cursor-not-allowed" : "hover:opacity-90"}`}
-              disabled={!isGameControlsEnabled || !gameActive || tilesClicked === 0}
+            <p className="text-white/80 text-sm">Connected: {user?.wallet?.address?.slice(0, 6)}...{user?.wallet?.address?.slice(-4)}</p>
+          </div>
+        ) : (
+          <div className="text-center mb-6">
+            <button 
+              onClick={login} 
+              className="bg-gradient-to-r from-purple-500 to-pink-500 text-white font-semibold py-3 px-8 rounded-full hover:from-purple-600 hover:to-pink-600 transition-all duration-200 shadow-lg"
             >
-              {isTransactionPending ? "Cashing..." : `Cash Out (${(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON)`}
+              Connect Wallet
             </button>
           </div>
+        )}
 
-          {(gameActive || revealedTiles.some(tile => tile)) && (
-            <div className="mt-6 mb-6">
-              <h3 className="text-xl mb-4">{gameEndedWithBomb ? "Game Over - All Bombs Revealed" : "Game Board"}</h3>
-              <div 
-                className="grid gap-2 justify-center mx-auto"
-                style={{ 
-                  gridTemplateColumns: 'repeat(6, 1fr)', 
-                  maxWidth: '300px',
-                  display: 'grid'
-                }}
-              >
-                {tiles.map((tile, i) => {
-                  const isRevealed = revealedTiles[i];
-                  const isBomb = tile === 2;
-                  
-                  return (
-                    <div
-                      key={i}
-                      onClick={() => handleTileClick(i)}
-                      className={`flex items-center justify-center font-bold text-lg transition-all duration-200 border-2 rounded-md
-                        ${!isRevealed 
-                          ? "bg-gray-300 text-black cursor-pointer hover:bg-gray-200 active:scale-95 border-gray-500" 
-                          : isBomb
-                          ? "bg-red-500 text-white animate-bounce border-red-700" 
-                          : "bg-green-500 text-white animate-pulse border-green-700"
-                        }
-                        ${(!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? "cursor-not-allowed opacity-75" : ""}`}
-                      style={{ 
-                        width: '45px',
-                        height: '45px',
-                        pointerEvents: (!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? 'none' : 'auto' 
-                      }}
-                    >
-                      {isRevealed ? (isBomb ? "💣" : "✅") : i + 1}
-                    </div>
-                  );
-                })}
+        {authenticated && (
+          <div className="space-y-6">
+            <div className="text-center">
+              <p className="text-white/90 mb-4 font-medium">Select Bet Amount:</p>
+              <div className="flex flex-wrap justify-center gap-3">
+                {["0.01", "0.1", "1", "3", "5", "10"].map(amount => (
+                  <button
+                    key={amount}
+                    onClick={() => selectBet(amount)}
+                    className={`py-2 px-4 rounded-full font-semibold transition-all duration-200 border-2
+                      ${selectedBet === amount 
+                        ? "bg-white text-purple-900 border-white shadow-lg" 
+                        : "bg-white/10 text-white border-white/30 hover:bg-white/20 hover:border-white/50"
+                      }
+                      ${(gameActive || isTransactionPending) ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                    disabled={gameActive || isTransactionPending}
+                  >
+                    {amount} MON
+                  </button>
+                ))}
               </div>
             </div>
-          )}
 
-          {gameActive && (
-            <div className="mt-4 p-4 bg-white bg-opacity-20 rounded-lg">
-              <p>🎯 Safe Tiles: {tilesClicked}/27</p>
-              <p>📈 Current Multiplier: {(calculateMultiplier(tilesClicked) * 0.95).toFixed(4)}x</p>
-              <p>💎 Potential Win: {(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON</p>
+            <div className="text-center space-y-3">
+              <button
+                onClick={handleStartGame}
+                className={`w-full max-w-xs bg-gradient-to-r from-green-500 to-emerald-500 text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-lg hover:from-green-600 hover:to-emerald-600
+                  ${(!isGameControlsEnabled || gameActive) ? "opacity-50 cursor-not-allowed" : "hover:scale-105"}`}
+                disabled={!isGameControlsEnabled || gameActive}
+              >
+                {isTransactionPending ? "Starting..." : "Start Game"}
+              </button>
+              
+              <button
+                onClick={handleCashOut}
+                className={`w-full max-w-xs bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-lg hover:from-yellow-600 hover:to-orange-600
+                  ${(!isGameControlsEnabled || !gameActive || tilesClicked === 0) ? "opacity-50 cursor-not-allowed" : "hover:scale-105"}`}
+                disabled={!isGameControlsEnabled || !gameActive || tilesClicked === 0}
+              >
+                {isTransactionPending ? "Cashing..." : `Cash Out (${(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON)`}
+              </button>
             </div>
-          )}
-        </div>
-      )}
 
-      <div className="mt-6 space-y-2">
-        <p className="text-lg">{status}</p>
-        <p>📊 Total Earnings: +{totalEarned.toFixed(4)} MON | Total Losses: -{totalLost.toFixed(4)} MON</p>
-        <p className="text-sm opacity-80">
-          🎯 Find 27 safe tiles among 36. Avoid 9 bombs. Cash out anytime to secure winnings!
-        </p>
+            {(gameActive || revealedTiles.some(tile => tile)) && (
+              <div className="mt-8">
+                <h3 className="text-2xl mb-6 text-center text-white font-semibold">
+                  {gameEndedWithBomb ? "💥 Game Over" : "🎮 Game Board"}
+                </h3>
+                <div className="flex justify-center">
+                  <div 
+                    className="grid gap-2 bg-white/10 backdrop-blur-sm p-4 rounded-2xl border border-white/20"
+                    style={{ 
+                      gridTemplateColumns: 'repeat(6, 1fr)', 
+                      maxWidth: '360px'
+                    }}
+                  >
+                    {tiles.map((tile, i) => {
+                      const isRevealed = revealedTiles[i];
+                      
+                      return (
+                        <div
+                          key={i}
+                          onClick={() => handleTileClick(i)}
+                          className={`flex items-center justify-center font-bold text-lg transition-all duration-200 border-2 rounded-xl
+                            ${!isRevealed 
+                              ? "bg-white/20 text-white cursor-pointer hover:bg-white/30 active:scale-95 border-white/40" 
+                              : tile === 2
+                              ? "bg-gradient-to-br from-red-500 to-red-600 text-white animate-bounce border-red-400" 
+                              : "bg-gradient-to-br from-green-500 to-emerald-500 text-white animate-pulse border-green-400"
+                            }
+                            ${(!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? "cursor-not-allowed opacity-75" : ""}`}
+                          style={{ 
+                            width: '50px',
+                            height: '50px',
+                            pointerEvents: (!gameActive || !isGameControlsEnabled || isRevealed || isTransactionPending) ? 'none' : 'auto' 
+                          }}
+                        >
+                          {isRevealed ? (tile === 2 ? "💣" : "✅") : (i + 1)}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {gameActive && (
+              <div className="mt-6 p-6 bg-white/10 backdrop-blur-sm rounded-2xl border border-white/20">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">
+                  <div>
+                    <p className="text-white/80 text-sm">Safe Tiles</p>
+                    <p className="text-2xl font-bold text-white">{tilesClicked}/27</p>
+                  </div>
+                  <div>
+                    <p className="text-white/80 text-sm">Multiplier</p>
+                    <p className="text-2xl font-bold text-green-400">{(calculateMultiplier(tilesClicked) * 0.95).toFixed(4)}x</p>
+                  </div>
+                  <div>
+                    <p className="text-white/80 text-sm">Potential Win</p>
+                    <p className="text-2xl font-bold text-yellow-400">{(calculateMultiplier(tilesClicked) * 0.95 * parseFloat(selectedBet)).toFixed(4)} MON</p>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-8 space-y-4 text-center">
+          <p className="text-lg text-white font-medium">{status}</p>
+          <div className="flex justify-center gap-6 text-sm">
+            <p className="text-green-400">📈 +{totalEarned.toFixed(4)} MON</p>
+            <p className="text-red-400">📉 -{totalLost.toFixed(4)} MON</p>
+          </div>
+          <p className="text-white/70 text-sm">
+            🎯 Find 27 safe tiles among 36. Avoid 9 bombs. Cash out anytime to secure winnings!
+          </p>
+        </div>
+
+        {gameError && (
+          <div className="mt-6 p-4 bg-red-500/20 backdrop-blur-sm border border-red-400/30 rounded-2xl">
+            <p className="text-red-200 text-center">❌ Error: {gameErrorText}</p>
+            <div className="text-center mt-3">
+              <button 
+                onClick={() => {
+                  setGameError(false);
+                  setGameErrorText("");
+                }}
+                className="bg-red-500 text-white px-4 py-2 rounded-full text-sm hover:bg-red-600 transition-colors"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
-      {gameError && (
-        <div className="mt-4 p-4 bg-red-500 bg-opacity-20 border border-red-300 rounded-lg">
-          <p className="text-red-200">❌ Error: {gameErrorText}</p>
-          <button 
-            onClick={() => {
-              setGameError(false);
-              setGameErrorText("");
-            }}
-            className="mt-2 bg-red-500 text-white px-3 py-1 rounded text-sm"
+      <div className="mt-8 text-center">
+        <p className="text-white/60 text-sm">
+          Made by{' '}
+          <a 
+            href="https://x.com/eric168eth" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 transition-colors underline"
           >
-            Dismiss
-          </button>
-        </div>
-      )}
+            @eric168eth
+          </a>
+          {' '}and{' '}
+          <a 
+            href="https://x.com/0xbobaa" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-blue-400 hover:text-blue-300 transition-colors underline"
+          >
+            @0xbobaa
+          </a>
+        </p>
+      </div>
     </div>
   );
 }
