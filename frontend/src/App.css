@@ -1,3 +1,24 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+
+@font-face {
+    font-family: 'Starcraft';
+    src: url('https://db.onlinewebfonts.com/t/08023e9759c8d4218b3e89543c8106f3.eot');
+    src: url('https://db.onlinewebfonts.com/t/08023e9759c8d4218b3e89543c8106f3.eot?#iefix') format('embedded-opentype'),
+         url('https://db.onlinewebfonts.com/t/08023e9759c8d4218b3e89543c8106f3.woff2') format('woff2'),
+         url('https://db.onlinewebfonts.com/t/08023e9759c8d4218b3e89543c8106f3.woff') format('woff'),
+         url('https://db.onlinewebfonts.com/t/08023e9759c8d4218b3e89543c8106f3.ttf') format('truetype'),
+         url('https://db.onlinewebfonts.com/t/08023e9759c8d4218b3e89543c8106f3.svg#Starcraft') format('svg');
+}
+
+body {
+  margin: 0;
+  font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
 /* Tailwind CSS is assumed to be included via CDN or build process */
 .animate-bounce {
   animation: bounce 0.5s infinite;
@@ -23,4 +44,260 @@
   50% {
     opacity: 0.7;
   }
+}
+
+/* Protoss-themed animations and effects */
+@keyframes protoss-glow {
+  0%, 100% { 
+    box-shadow: 0 0 20px rgba(0, 255, 255, 0.3), 0 0 40px rgba(0, 255, 255, 0.1);
+  }
+  50% { 
+    box-shadow: 0 0 30px rgba(0, 255, 255, 0.5), 0 0 60px rgba(0, 255, 255, 0.2);
+  }
+}
+
+@keyframes protoss-pulse {
+  0%, 100% { 
+    opacity: 0.8;
+    transform: scale(1);
+  }
+  50% { 
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+@keyframes protoss-border {
+  0%, 100% { 
+    border-color: rgba(0, 255, 255, 0.5);
+  }
+  50% { 
+    border-color: rgba(0, 255, 255, 0.8);
+  }
+}
+
+@keyframes protoss-text-glow {
+  0%, 100% { 
+    text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+  }
+  50% { 
+    text-shadow: 0 0 20px rgba(0, 255, 255, 0.8), 0 0 30px rgba(0, 255, 255, 0.4);
+  }
+}
+
+@keyframes protoss-particle {
+  0% { 
+    transform: translateY(0px) rotate(0deg);
+    opacity: 0;
+  }
+  50% { 
+    opacity: 1;
+  }
+  100% { 
+    transform: translateY(-100px) rotate(360deg);
+    opacity: 0;
+  }
+}
+
+/* Enhanced text shadows */
+.text-shadow-lg {
+  text-shadow: 0 0 10px currentColor, 0 0 20px currentColor;
+}
+
+/* Protoss button hover effects */
+.protoss-button {
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.protoss-button::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(0, 255, 255, 0.2), transparent);
+  transition: left 0.5s;
+}
+
+.protoss-button:hover::before {
+  left: 100%;
+}
+
+/* Enhanced tile animations */
+.tile-reveal {
+  animation: protoss-pulse 0.5s ease-out;
+}
+
+.tile-safe {
+  animation: protoss-glow 2s infinite;
+}
+
+.tile-bomb {
+  animation: protoss-pulse 0.3s ease-in-out 3;
+}
+
+/* Status text animations */
+.status-warning {
+  animation: protoss-text-glow 2s infinite;
+}
+
+/* Floating particles */
+.particle {
+  position: absolute;
+  width: 2px;
+  height: 2px;
+  background: rgba(0, 255, 255, 0.6);
+  border-radius: 50%;
+  animation: protoss-particle 3s infinite linear;
+}
+
+/* Enhanced border effects */
+.protoss-border {
+  position: relative;
+}
+
+.protoss-border::after {
+  content: '';
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  right: -2px;
+  bottom: -2px;
+  background: linear-gradient(45deg, #00ffff, #0080ff, #8000ff, #00ffff);
+  z-index: -1;
+  border-radius: inherit;
+  animation: protoss-glow 3s infinite;
+}
+
+/* Console panel effects */
+.console-panel {
+  position: relative;
+  background: linear-gradient(135deg, rgba(0,0,0,0.95) 0%, rgba(20,20,40,0.9) 50%, rgba(0,0,0,0.95) 100%);
+  border: 2px solid rgba(0, 255, 255, 0.5);
+  box-shadow: 0 0 30px rgba(0, 255, 255, 0.2), inset 0 0 30px rgba(0, 0, 0, 0.3);
+}
+
+.console-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #00ffff, transparent);
+  animation: protoss-border 2s infinite;
+}
+
+/* Enhanced button styles */
+.protoss-btn {
+  background: linear-gradient(135deg, rgba(0, 255, 255, 0.1), rgba(0, 128, 255, 0.1));
+  border: 2px solid rgba(0, 255, 255, 0.5);
+  color: #00ffff;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.protoss-btn:hover {
+  background: linear-gradient(135deg, rgba(0, 255, 255, 0.2), rgba(0, 128, 255, 0.2));
+  border-color: rgba(0, 255, 255, 0.8);
+  box-shadow: 0 0 20px rgba(0, 255, 255, 0.4);
+  transform: translateY(-2px);
+}
+
+.protoss-btn:active {
+  transform: translateY(0);
+}
+
+/* Game board enhancements */
+.game-board {
+  background: linear-gradient(135deg, rgba(0,0,0,0.8) 0%, rgba(20,20,40,0.7) 50%, rgba(0,0,0,0.8) 100%);
+  border: 3px solid rgba(0, 255, 255, 0.5);
+  box-shadow: 0 0 40px rgba(0, 255, 255, 0.3), inset 0 0 40px rgba(0, 0, 0, 0.5);
+}
+
+/* Tile enhancements */
+.game-tile {
+  transition: all 0.3s ease;
+  position: relative;
+}
+
+.game-tile:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 15px rgba(0, 255, 255, 0.4);
+}
+
+.game-tile.safe {
+  background: linear-gradient(135deg, #1e3a8a, #1e40af);
+  border-color: #00ffff;
+  box-shadow: inset 0 0 10px rgba(0, 255, 255, 0.3);
+}
+
+.game-tile.bomb {
+  background: linear-gradient(135deg, #991b1b, #dc2626);
+  border-color: #ef4444;
+  animation: protoss-pulse 0.5s ease-in-out 3;
+}
+
+/* Status display enhancements */
+.status-display {
+  background: linear-gradient(135deg, rgba(0,0,0,0.7) 0%, rgba(20,20,40,0.6) 50%, rgba(0,0,0,0.7) 100%);
+  border: 2px solid rgba(0, 255, 255, 0.5);
+  box-shadow: 0 0 30px rgba(0, 255, 255, 0.2), inset 0 0 30px rgba(0, 0, 0, 0.3);
+}
+
+/* Enhanced typography */
+.protoss-text {
+  font-family: 'Starcraft', sans-serif;
+  text-shadow: 0 0 10px currentColor;
+  letter-spacing: 0.1em;
+}
+
+.protoss-title {
+  font-family: 'Starcraft', sans-serif;
+  background: linear-gradient(45deg, #00ffff, #ffff00, #00ffff);
+  background-size: 200% 200%;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: protoss-glow 3s infinite;
+}
+
+/* Responsive enhancements */
+@media (max-width: 768px) {
+  .console-panel {
+    margin: 1rem;
+    padding: 1rem;
+  }
+  
+  .game-board {
+    padding: 0.5rem;
+  }
+  
+  .game-tile {
+    width: 2.5rem;
+    height: 2.5rem;
+  }
+}
+
+/* Loading animations */
+.loading-pulse {
+  animation: protoss-pulse 1.5s infinite;
+}
+
+.loading-glow {
+  animation: protoss-glow 2s infinite;
+}
+
+/* Success/Error states */
+.success-glow {
+  animation: protoss-glow 0.5s ease-out;
+  box-shadow: 0 0 30px rgba(0, 255, 0, 0.5);
+}
+
+.error-pulse {
+  animation: protoss-pulse 0.3s ease-in-out 3;
+  box-shadow: 0 0 30px rgba(255, 0, 0, 0.5);
 }

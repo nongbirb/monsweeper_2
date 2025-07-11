@@ -58,10 +58,7 @@ const abi = [
           {"name": "difficulty", "type": "uint8"},
           {"name": "startTimestamp", "type": "uint256"},
           {"name": "serverSeed", "type": "bytes32"},
-          {"name": "serverSeedRevealed", "type": "bool"},
-          {"name": "blockNumber", "type": "uint256"},
-          {"name": "futureBlockHash", "type": "bytes32"},
-          {"name": "nonce", "type": "uint256"}
+          {"name": "serverSeedRevealed", "type": "bool"}
         ]
       }
     ],
@@ -127,7 +124,7 @@ function createCommitmentHash(difficulty, seed) {
   // We must remove it here to ensure the client and contract hashes match.
   const seedForHashing = seed.substring(2);
   const gameData = JSON.stringify({
-    version: "ultra-v1",
+    version: "v1",
     difficulty: difficultyStr,
     seed: seedForHashing,
   });
@@ -462,13 +459,10 @@ function App() {
           clientSeed: gameSeed,
           serverSeed: serverSeed,
           combinedSeed: combinedSeed,
-          nonce: gameInfo.nonce,
-          blockNumber: gameInfo.blockNumber,
-          futureBlockHash: gameInfo.futureBlockHash,
           revealedAt: null
         };
         
-        console.log("🔒 Game started with ENHANCED entropy - seeds will be revealed after game ends");
+        console.log("🔒 Game started with server entropy - seeds will be revealed after game ends");
         
         setGameId(receivedGameId);
         setGameActive(true);
@@ -604,23 +598,6 @@ function App() {
            setStatus("Probe destroyed. The Swarm is relentless.");
          }
        }
-      
-      // 🔒 SECURITY: Reveal seeds now that game is finished
-      if (window.gameSecurityInfo) {
-        window.gameSecurityInfo.revealedAt = new Date().toISOString();
-        console.log("🔒 GAME FINISHED - REVEALING ENHANCED ENTROPY FOR VERIFICATION:");
-        console.log("🎯 Client Seed:", window.gameSecurityInfo.clientSeed);
-        console.log("🎯 Server Seed:", window.gameSecurityInfo.serverSeed);
-        console.log("🎯 Combined Seed:", window.gameSecurityInfo.combinedSeed);
-        console.log("🔒 ENHANCED ENTROPY SOURCES:");
-        console.log("   📊 Game Nonce:", window.gameSecurityInfo.nonce);
-        console.log("   🏗️ Block Number:", window.gameSecurityInfo.blockNumber);
-        console.log("   🔮 Future Block Hash:", window.gameSecurityInfo.futureBlockHash);
-        console.log("🔒 Enhanced server entropy worked! Each game has unique seeds.");
-        console.log("🔒 Seeds revealed at:", window.gameSecurityInfo.revealedAt);
-        console.log("🔒 Game was " + (won ? "WON" : "LOST"));
-      }
-      
       setGameActive(false);
       resetGame();
     } catch (err) {
@@ -642,11 +619,6 @@ function App() {
     setGameSeed(null);
     setGameCommitmentHash(null);
     setGameEndedWithBomb(false);
-    
-    // 🔒 SECURITY: Clear stored security info
-    if (window.gameSecurityInfo) {
-      delete window.gameSecurityInfo;
-    }
   };
 
   // Forfeit game
@@ -664,23 +636,6 @@ function App() {
       setStatus(`Processing tactical retreat... ${txHash.slice(0, 10)}...`);
       await publicClient.current.waitForTransactionReceipt({ hash: txHash });
       setStatus("Probe self-destructed. A necessary sacrifice.");
-      
-      // 🔒 SECURITY: Reveal seeds now that game is finished (forfeit)
-      if (window.gameSecurityInfo) {
-        window.gameSecurityInfo.revealedAt = new Date().toISOString();
-        console.log("🔒 GAME FORFEITED - REVEALING ENHANCED ENTROPY FOR VERIFICATION:");
-        console.log("🎯 Client Seed:", window.gameSecurityInfo.clientSeed);
-        console.log("🎯 Server Seed:", window.gameSecurityInfo.serverSeed);
-        console.log("🎯 Combined Seed:", window.gameSecurityInfo.combinedSeed);
-        console.log("🔒 ENHANCED ENTROPY SOURCES:");
-        console.log("   📊 Game Nonce:", window.gameSecurityInfo.nonce);
-        console.log("   🏗️ Block Number:", window.gameSecurityInfo.blockNumber);
-        console.log("   🔮 Future Block Hash:", window.gameSecurityInfo.futureBlockHash);
-        console.log("🔒 Enhanced server entropy worked! Each game has unique seeds.");
-        console.log("🔒 Seeds revealed at:", window.gameSecurityInfo.revealedAt);
-        console.log("🔒 Game was FORFEITED");
-      }
-      
       setGameActive(false);
       resetGame();
     } catch (err) {
