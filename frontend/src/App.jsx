@@ -1225,7 +1225,7 @@ function App() {
                 </div>
                 <div className="flex justify-center items-center gap-2 flex-wrap">
                   <span className='font-bold text-purple-300 font-mono tracking-wide text-sm'>BET:</span>
-                   {["0.25", "0.5", "1", "3", "5", "10"].map((amount) => (
+                   {["0.25", "0.5", "1"].map((amount) => (
                      <button key={amount} onClick={() => setSelectedBet(amount)} className={`font-bold py-1 px-3 border-2 transition-all duration-200 font-mono transform hover:scale-105 text-sm ${selectedBet === amount ? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white border-purple-400 shadow-[0_0_15px_rgba(128,0,128,0.5)]' : 'bg-transparent border-purple-400/60 text-purple-400 hover:bg-purple-400/20'}`} disabled={isTransactionPending}>{amount}</button>
                    ))}
                 </div>
