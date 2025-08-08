@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { useAppKit, useAppKitAccount, useAppKitProvider } from '@reown/appkit/react';
+import { usePrivy } from '@privy-io/react-auth';
 import { createWalletClient, createPublicClient, custom, http, parseGwei } from 'viem';
 import { ethers } from 'ethers';
 import './App.css';
@@ -214,12 +214,10 @@ function calculateMultiplier(safeRevealed, numBombs) {
   return multiplier;
 }
 function useTransaction() {
-  const { address, isConnected, chainId } = useAppKitAccount();
-  const { walletProvider } = useAppKitProvider('eip155');
+  const { user, ready } = usePrivy();
   const walletClient = useRef(null);
   const publicClient = useRef(null);
   const [isWalletReady, setIsWalletReady] = useState(false);
-  
   const switchToMonadTestnet = async (provider) => {
     try {
       await provider.request({
@@ -251,10 +249,9 @@ function useTransaction() {
       }
     }
   };
-  
   useEffect(() => {
     async function initWalletClient() {
-      if (!isConnected || !address || !walletProvider) {
+      if (!ready || !user?.wallet?.address) {
         walletClient.current = null;
         publicClient.current = null;
         setIsWalletReady(false);
@@ -265,16 +262,28 @@ function useTransaction() {
           chain: MONAD_TESTNET,
           transport: http()
         });
-        
-        // Switch to Monad Testnet if not already connected
-        if (chainId !== MONAD_TESTNET.id) {
-          await switchToMonadTestnet(walletProvider);
+        let provider = null;
+        if (user.wallet?.getEthereumProvider) {
+          provider = await user.wallet.getEthereumProvider();
+        } else if (user.wallet?.getEthersProvider) {
+          const ethersProvider = await user.wallet.getEthersProvider();
+          provider = ethersProvider?.provider;
+        } else if (user.wallet?.provider) {
+          provider = user.wallet.provider;
+        } else if (
+          user.wallet?.walletClientType === 'metamask' ||
+          user.wallet?.connectorType === 'injected'
+        ) {
+          provider = window.ethereum;
         }
-        
+        if (!provider) {
+          throw new Error("No compatible provider found!");
+        }
+        await switchToMonadTestnet(provider);
         walletClient.current = createWalletClient({
           chain: MONAD_TESTNET,
-          transport: custom(walletProvider),
-          account: address
+          transport: custom(provider),
+          account: user.wallet.address
         });
         setIsWalletReady(true);
       } catch (error) {
@@ -285,18 +294,18 @@ function useTransaction() {
       }
     }
     initWalletClient();
-  }, [address, isConnected, chainId, walletProvider]);
+  }, [user, ready]);
   async function sendTransactionAndConfirm({ to, data, gas, value = 0 }) {
     try {
       if (!walletClient.current || !publicClient.current) {
         throw new Error("Wallet client not initialized.");
       }
-      if (!address) {
+      if (!user?.wallet?.address) {
         throw new Error("User wallet address not available.");
       }
       const txHash = await walletClient.current.sendTransaction({
         to,
-        account: address,
+        account: user.wallet.address,
         data,
         gas: BigInt(gas),
         value: BigInt(value),
@@ -312,8 +321,7 @@ function useTransaction() {
   return { walletClient, publicClient, sendTransactionAndConfirm, isWalletReady };
 }
 function App() {
-  const { open } = useAppKit();
-  const { address, isConnected } = useAppKitAccount();
+  const { user, authenticated, login, logout } = usePrivy();
   const { walletClient, publicClient, sendTransactionAndConfirm, isWalletReady } = useTransaction();
   // Game state
   const [gameId, setGameId] = useState(null);
@@ -339,17 +347,12 @@ function App() {
   const [explodingTile, setExplodingTile] = useState(null);
   const [explosionStage, setExplosionStage] = useState(0); // 0: normal, 1: expanding, 2: boom, 3: fade
   const [showFullScreenExplosion, setShowFullScreenExplosion] = useState(false);
-  
-  // Eric image state for orbit dots
-  const [ericDotIndex, setEricDotIndex] = useState(null); // null means no Eric, 0-9 for dot index
-  const [ericTransitioning, setEricTransitioning] = useState(false);
-  
   const contractInterface = useMemo(() => new ethers.Interface(abi), []);
 
   useEffect(() => {
     const fetchPlayerStats = async () => {
       // We only want to fetch stats when the wallet is connected and ready.
-      if (!isWalletReady || !publicClient.current || !address) return;
+      if (!isWalletReady || !publicClient.current || !user?.wallet?.address) return;
 
       try {
         const allLogs = [];
@@ -363,7 +366,7 @@ function App() {
             address: contractAddress,
             event: contractInterface.getEvent('GameEnded'),
             args: {
-              player: address,
+              player: user.wallet.address,
             },
             fromBlock,
             toBlock
@@ -391,7 +394,7 @@ function App() {
     };
 
     fetchPlayerStats();
-  }, [isWalletReady, address]);
+  }, [isWalletReady, user?.wallet?.address]);
 
   useEffect(() => {
     // Generate a new seed and commitment hash whenever the difficulty changes,
@@ -423,7 +426,7 @@ function App() {
   }, [publicClient.current]);
 
   useEffect(() => {
-    if (!isConnected) {
+    if (!authenticated) {
       setStatus("Awaiting connection to Psionic Matrix.");
     } else if (!isWalletReady) {
       setStatus("Calibrating warp drives...");
@@ -432,44 +435,7 @@ function App() {
     } else {
       setStatus("Nexus online. Awaiting command.");
     }
-  }, [isConnected, isWalletReady]);
-
-  // Eric image random switching effect
-  useEffect(() => {
-    // Start Eric animation after 3 seconds
-    const startDelay = setTimeout(() => {
-      const randomDot = Math.floor(Math.random() * 10);
-      setEricDotIndex(randomDot);
-    }, 3000);
-    
-    const ericInterval = setInterval(() => {
-      if (ericTransitioning) {
-        return;
-      }
-      
-      setEricTransitioning(true);
-      
-      if (ericDotIndex === null) {
-        // Show Eric on a random dot (0-9 for 10 dots total)
-        const randomDotIndex = Math.floor(Math.random() * 10);
-        setEricDotIndex(randomDotIndex);
-      } else {
-        // Hide Eric
-        setEricDotIndex(null);
-      }
-      
-      // Reset transitioning state after animation completes
-      setTimeout(() => {
-        setEricTransitioning(false);
-      }, 600); // Match CSS transition duration + buffer
-      
-    }, 4000); // Fixed 4 second interval for easier debugging
-    
-    return () => {
-      clearTimeout(startDelay);
-      clearInterval(ericInterval);
-    };
-  }, [ericDotIndex, ericTransitioning]);
+  }, [authenticated, isWalletReady]);
 
   // Start game
   const handleStartGame = async () => {
@@ -477,7 +443,7 @@ function App() {
       setGameError(false);
       setGameErrorText("");
       setIsTransactionPending(true);
-      if (!isConnected || !address) {
+      if (!authenticated || !user?.wallet?.address) {
         setStatus("Psionic link not established. Connect your wallet.");
         return;
       }
@@ -574,7 +540,7 @@ function App() {
         setPayoutLimitReached(false);
       }
       setTotalLost(prev => prev + parseFloat(selectedBet));
-      setStatus("Game started! Click on the tiles.");
+      setStatus("Probe dispatched. Avoid hostile signatures.");
 
     } catch (err) {
       console.error("Error starting game:", err);
@@ -628,14 +594,11 @@ function App() {
     }
     
     if (bombPositions[pos]) {
-      // Immediately disable game to prevent race condition
-      setGameActive(false);
-      
       // Start full-screen explosion animation sequence
       setExplodingTile(pos);
       setShowFullScreenExplosion(true);
       setExplosionStage(1); // Start expanding
-      setStatus("Hostile detected! GAME OVER!");
+      setStatus("Hostile signature detected! Probe compromised.");
 
       // Stage 1: Expansion (0-500ms)
       setTimeout(() => setExplosionStage(2), 500); // Boom stage
@@ -662,6 +625,7 @@ function App() {
         setTiles(newTiles);
         setRevealedTiles(newRevealed);
         setGameEndedWithBomb(true);
+        setGameActive(false);
         
         // Reset explosion state
         setExplodingTile(null);
@@ -698,7 +662,7 @@ function App() {
     }
     try {
       setIsTransactionPending(true);
-      setStatus(won ? "Executing..." : "Signal lost...");
+      setStatus(won ? "Recalling probe..." : "Signal lost...");
       const data = contractInterface.encodeFunctionData("endGame", [
         gameId,
         gameSeed, // Send client seed
@@ -727,7 +691,7 @@ function App() {
          const payout = parseFloat(ethers.formatEther(gameEndedEvent.args.payout));
          if (won) {
            setTotalEarned(prev => prev + payout);
-           setStatus(`${payout.toFixed(4)} MON acquired. We await your next command.`);
+           setStatus(`Probe recalled. ${payout.toFixed(4)} minerals acquired. We await your next command.`);
          } else {
            setStatus("Probe destroyed. The Swarm is relentless.");
          }
@@ -826,7 +790,7 @@ function App() {
       setIsTransactionPending(false);
     }
   };
-  const isGameControlsEnabled = isConnected && isWalletReady && !isTransactionPending;
+  const isGameControlsEnabled = authenticated && isWalletReady && !isTransactionPending;
   const numBombs = difficulty === 1 ? 12 : 9;
   const currentMultiplier = calculateMultiplier(clickedTileSequence.length, numBombs);
   const finalMultiplier = currentMultiplier; // House edge already applied in calculateMultiplier
@@ -834,46 +798,6 @@ function App() {
   // Protect against overflow in display calculation
   const safeFinalMultiplier = Math.min(finalMultiplier, 1_000_000); // Cap at 1M for display
   const potentialWin = safeFinalMultiplier * parseFloat(selectedBet);
-  
-  // Function to render orbit dot or Eric image
-  const renderOrbitDot = (dotIndex, animationClass, baseColor, shadowColor) => {
-    const isEric = ericDotIndex === dotIndex;
-    const shouldDim = ericDotIndex !== null && ericDotIndex !== dotIndex;
-    
-    return (
-      <div className={`absolute ${animationClass}`}>
-        {/* Normal dot */}
-        <div 
-          className={`orbit-dot w-4 h-4 rounded-full ${shouldDim ? 'dimmed' : ''}`}
-          style={{ 
-            backgroundColor: baseColor,
-            boxShadow: `0 0 15px ${shadowColor}`,
-            opacity: isEric ? 0 : 1,
-            transition: 'opacity 0.5s ease-in-out, transform 0.5s ease-in-out',
-            marginLeft: '-8px',
-            marginTop: '-8px'
-          }}
-        />
-        {/* Eric image */}
-        <div
-          className="orbit-eric"
-          style={{
-            marginLeft: '-16px',
-            marginTop: '-16px',
-            opacity: isEric ? 1 : 0,
-            transform: isEric ? 'scale(1)' : 'scale(0.3)',
-            transition: 'opacity 0.5s ease-in-out, transform 0.5s ease-in-out',
-            display: 'block',
-            backgroundImage: `url('/eric.png')`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center',
-            backgroundColor: 'transparent'
-          }}
-        />
-      </div>
-    );
-  };
-  
   return (
     <div className="min-h-screen bg-black text-white relative overflow-hidden">
       {/* Animated Monad Background */}
@@ -897,78 +821,30 @@ function App() {
         {/* Monad Logo with Orbiting Dots - Screen Size */}
         <div className="absolute inset-0 flex items-center justify-center">
           <div className="relative w-screen h-screen flex items-center justify-center" style={{ transform: 'translateX(-20%)' }}>
-            {/* Premium Holographic Monad Logo */}
-            <div className="premium-monad">
-              {/* Quantum field distortion - deepest layer */}
-              <div className="quantum-field"></div>
-              
-              {/* Holographic rotating background */}
-              <div className="holographic-field"></div>
-              
-              {/* Volumetric lighting */}
-              <div className="volumetric-light"></div>
-              
-              {/* Prismatic energy core */}
-              <div className="prismatic-core"></div>
-              
-              {/* Advanced quantum particles */}
-              <div className="quantum-particle particle-1"></div>
-              <div className="quantum-particle particle-2"></div>
-              <div className="quantum-particle particle-3"></div>
-              <div className="quantum-particle particle-4"></div>
-              <div className="quantum-particle particle-5"></div>
-              <div className="quantum-particle particle-6"></div>
-              
-              {/* Dynamic energy rings */}
-              <div className="energy-ring energy-ring-1"></div>
-              <div className="energy-ring energy-ring-2"></div>
-              <div className="energy-ring energy-ring-3"></div>
-              <div className="energy-ring energy-ring-4"></div>
-              
-              {/* Glassmorphism backdrop */}
-              <div className="glass-backdrop"></div>
-              
-              {/* Premium Monad Logo */}
-              <img 
-                src="https://monad-foundation.notion.site/image/https%3A%2F%2Fprod-files-secure.s3.us-west-2.amazonaws.com%2F8b536fe4-3bbf-45fc-b661-190b80c94bea%2Fc5c6a821-eed7-43e6-9a52-f32883fae734%2FMonad_Logo_-_Default_-_Logo_Mark.png?table=block&id=16863675-94f2-8005-a154-eea674b19e16&spaceId=8b536fe4-3bbf-45fc-b661-190b80c94bea&width=140&userId=&cache=v2"
-                alt="Monad Logo"
-                className="monad-premium"
-              />
-            </div>
+            {/* Monad Logo - Large Center */}
+            <img 
+              src="https://monad-foundation.notion.site/image/https%3A%2F%2Fprod-files-secure.s3.us-west-2.amazonaws.com%2F8b536fe4-3bbf-45fc-b661-190b80c94bea%2Fc5c6a821-eed7-43e6-9a52-f32883fae734%2FMonad_Logo_-_Default_-_Logo_Mark.png?table=block&id=16863675-94f2-8005-a154-eea674b19e16&spaceId=8b536fe4-3bbf-45fc-b661-190b80c94bea&width=140&userId=&cache=v2"
+              alt="Monad Logo"
+              className="w-15 h-15 opacity-30 z-10"
+              style={{ transform: 'scale(1)' }}
+            />
             
             {/* Orbit 1 - Clockwise - Inner */}
             <div className="absolute w-96 h-96 flex items-center justify-center animate-orbit-1">
               <div className="absolute w-96 h-96 border border-[#836EF9]/25 rounded-full"></div>
-              {renderOrbitDot(0, 'animate-orbit-dot-1', '#836EF9', '#836EF9')}
-              {renderOrbitDot(1, 'animate-orbit-dot-1-offset', '#836EF9', '#836EF9')}
+              <div className="absolute w-4 h-4 bg-[#836EF9] rounded-full shadow-[0_0_15px_#836EF9] animate-orbit-dot-1"></div>
             </div>
             
             {/* Orbit 2 - Counterclockwise - Middle */}
             <div className="absolute w-[28rem] h-[28rem] flex items-center justify-center animate-orbit-2">
               <div className="absolute w-[28rem] h-[28rem] border border-[#200052]/25 rounded-full"></div>
-              {renderOrbitDot(2, 'animate-orbit-dot-2', '#200052', '#200052')}
-              {renderOrbitDot(3, 'animate-orbit-dot-2-offset', '#200052', '#200052')}
+              <div className="absolute w-4 h-4 bg-[#200052] rounded-full shadow-[0_0_15px_#200052] animate-orbit-dot-2"></div>
             </div>
             
             {/* Orbit 3 - Clockwise - Outer */}
             <div className="absolute w-[32rem] h-[32rem] flex items-center justify-center animate-orbit-3">
               <div className="absolute w-[32rem] h-[32rem] border border-[#A0055D]/25 rounded-full"></div>
-              {renderOrbitDot(4, 'animate-orbit-dot-3', '#A0055D', '#A0055D')}
-              {renderOrbitDot(5, 'animate-orbit-dot-3-offset', '#A0055D', '#A0055D')}
-            </div>
-            
-            {/* Orbit 4 - Counterclockwise - Far */}
-            <div className="absolute w-[36rem] h-[36rem] flex items-center justify-center animate-orbit-4">
-              <div className="absolute w-[36rem] h-[36rem] border border-[#00FF7F]/25 rounded-full"></div>
-              {renderOrbitDot(6, 'animate-orbit-dot-4', '#00FF7F', '#00FF7F')}
-              {renderOrbitDot(7, 'animate-orbit-dot-4-offset', '#00FF7F', '#00FF7F')}
-            </div>
-            
-            {/* Orbit 5 - Clockwise - Outermost */}
-            <div className="absolute w-[40rem] h-[40rem] flex items-center justify-center animate-orbit-5">
-              <div className="absolute w-[40rem] h-[40rem] border border-[#FF4500]/25 rounded-full"></div>
-              {renderOrbitDot(8, 'animate-orbit-dot-5', '#FF4500', '#FF4500')}
-              {renderOrbitDot(9, 'animate-orbit-dot-5-offset', '#FF4500', '#FF4500')}
+              <div className="absolute w-4 h-4 bg-[#A0055D] rounded-full shadow-[0_0_15px_#A0055D] animate-orbit-dot-3"></div>
             </div>
           </div>
         </div>
@@ -1000,12 +876,12 @@ function App() {
           
           {/* Main Eric Image */}
           <img 
-            src="/eric.png"
+            src="https://media.discordapp.net/attachments/1238864553337421970/1392727976566722712/Eric.png?ex=687290c1&is=68713f41&hm=ca4519dd340a295a993ac2df64fc6173182101caaedd0b4fa5f94324c63c04b3&=&format=webp&quality=lossless&width=1452&height=1452"
             alt="Eric Full Screen Explosion"
-            className={`object-contain transition-all explosion-image-optimized
-              ${explosionStage === 1 ? 'animate-[fullScreenExpand_500ms_forwards] animate-fullscreen-expand' : ''}
-              ${explosionStage === 2 ? 'animate-[fullScreenBoom_800ms_forwards] animate-fullscreen-boom' : ''}
-              ${explosionStage === 3 ? 'animate-[fullScreenFade_600ms_forwards] animate-fullscreen-fade' : ''}
+            className={`object-contain transition-all ease-out
+              ${explosionStage === 1 ? 'animate-[fullScreenExpand_500ms_ease-out_forwards]' : ''}
+              ${explosionStage === 2 ? 'animate-[fullScreenBoom_800ms_ease-out_forwards]' : ''}
+              ${explosionStage === 3 ? 'animate-[fullScreenFade_600ms_ease-out_forwards]' : ''}
             `}
             style={{
               width: explosionStage === 0 ? '100px' : 'auto',
@@ -1031,20 +907,7 @@ function App() {
         {/* Header */}
         <div className="text-center mb-4">
           <h1 className="text-4xl lg:text-6xl font-bold mb-3 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 via-purple-400 to-pink-400 animate-pulse" style={{ fontFamily: 'Starcraft, sans-serif' }}>
-            M
-            <img 
-              src="https://monad-foundation.notion.site/image/https%3A%2F%2Fprod-files-secure.s3.us-west-2.amazonaws.com%2F8b536fe4-3bbf-45fc-b661-190b80c94bea%2Fc5c6a821-eed7-43e6-9a52-f32883fae734%2FMonad_Logo_-_Default_-_Logo_Mark.png?table=block&id=16863675-94f2-8005-a154-eea674b19e16&spaceId=8b536fe4-3bbf-45fc-b661-190b80c94bea&width=140&userId=&cache=v2"
-              alt="Monad Logo" 
-              className="inline-block w-10 h-10 lg:w-14 lg:h-14 mx-1"
-              style={{ verticalAlign: 'text-bottom', marginBottom: '0.4rem' }}
-            />
-            NSWEEPER
-            <img 
-              src="/eric.png" 
-              alt="Eric" 
-              className="inline-block w-12 h-12 lg:w-16 lg:h-16 ml-1 rounded-full"
-              style={{ verticalAlign: 'middle' }}
-            />
+            MONSWEEPER
           </h1>
           <div className="flex justify-center items-center gap-4 text-xs lg:text-sm text-cyan-400/80 font-mono">
             <div className="flex items-center gap-2 bg-black/50 px-2 py-1 border border-cyan-400/30">
@@ -1053,33 +916,38 @@ function App() {
             </div>
             <div className="flex items-center gap-2 bg-black/50 px-2 py-1 border border-purple-400/30">
               <div className="w-2 h-2 bg-purple-400 rounded-full animate-pulse"></div>
-              <span>Made by <a href="https://x.com/0xbobaa" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300">boba</a> and <a href="https://x.com/eric168eth" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300">Eric</a>, Art by <a href="https://x.com/juju5378" target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:text-cyan-300">Juju</a></span>
+              <span>MONAD TESTNET</span>
             </div>
           </div>
         </div>
 
-        {address && isConnected ? (
+        {user && authenticated ? (
           <div className="text-center mb-3">
             <div className="bg-gradient-to-r from-cyan-500/20 to-purple-500/20 border border-cyan-400/30 px-3 py-1 mb-2 font-mono text-cyan-300 text-sm">
               <div className="flex items-center justify-center gap-2">
                 <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-                <span>Connected Wallet: {address?.slice(0, 6)}...{address?.slice(-4)}</span>
+                <span>NEURAL LINK: {user?.wallet?.address?.slice(0, 6)}...{user?.wallet?.address?.slice(-4)}</span>
               </div>
             </div>
-            <w3m-button />
+            <button
+              onClick={logout}
+              className="bg-gradient-to-r from-red-600 to-red-500 text-white font-bold py-1 px-4 border border-red-400/50 hover:from-red-500 hover:to-red-400 transition-all duration-200 transform hover:scale-105 font-mono text-sm"
+            >
+              ◤ DISCONNECT ◢
+            </button>
           </div>
         ) : (
           <div className="text-center mb-4">
             <button
-              onClick={() => open()}
+              onClick={login}
               className="bg-gradient-to-r from-cyan-500 to-purple-600 text-white font-bold py-3 px-8 border-2 border-cyan-400/50 hover:border-cyan-300 transition-all duration-200 transform hover:scale-105 shadow-lg shadow-cyan-400/30 font-mono text-base"
             >
-              ◤ Connect Wallet ◢
+              ◤ ESTABLISH NEURAL LINK ◢
             </button>
           </div>
         )}
 
-        {isConnected && (
+        {authenticated && (
         <div className="flex-1 w-full max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-4 gap-3 lg:gap-4 min-h-0">
           
           {/* Left Panel */}
@@ -1087,15 +955,15 @@ function App() {
             {/* Stats Panel */}
             <div className="bg-gradient-to-br from-cyan-900/30 to-purple-900/30 border-2 border-cyan-400/40 p-3 backdrop-blur-sm">
               <h3 className="text-lg font-bold text-cyan-300 mb-2 border-b border-cyan-400/50 pb-1 font-mono tracking-wide">
-                ◤ STATS ◢
+                ◤ NEURAL STATS ◢
               </h3>
               <div className="space-y-2 text-sm font-mono">
                 <div className="flex justify-between items-center">
-                  <span className="text-cyan-400/80">EARNED</span>
+                  <span className="text-cyan-400/80">CREDITS EARNED</span>
                   <span className="text-green-400 font-bold">+{totalEarned.toFixed(4)}</span>
                 </div>
                 <div className="flex justify-between items-center">
-                  <span className="text-cyan-400/80">LOST</span>
+                  <span className="text-cyan-400/80">COMBAT LOSSES</span>
                   <span className="text-red-400 font-bold">-{totalLost.toFixed(4)}</span>
                 </div>
                 <div className="flex justify-between items-center border-t border-cyan-400/30 pt-2">
@@ -1110,7 +978,7 @@ function App() {
             {/* Game Info Panel */}
             <div className="bg-gradient-to-br from-purple-900/30 to-pink-900/30 border-2 border-purple-400/40 p-3 backdrop-blur-sm">
               <h3 className="text-lg font-bold text-purple-300 mb-2 border-b border-purple-400/50 pb-1 font-mono tracking-wide">
-                ◤ STATUS ◢
+                ◤ PROBE STATUS ◢
               </h3>
               <div className="grid grid-cols-2 gap-2 text-sm font-mono">
                 <div>
@@ -1130,6 +998,12 @@ function App() {
                   <p className="text-lg font-bold text-red-400">{numBombs}</p>
                 </div>
               </div>
+              {gameActive && gameCommitmentHash && (
+                <div className="mt-3 border-t border-purple-400/30 pt-2">
+                  <p className="text-purple-400/80 text-xs">COMMITMENT HASH</p>
+                  <p className="text-xs font-mono text-white/50 break-all">{gameCommitmentHash}</p>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1166,7 +1040,7 @@ function App() {
                       {revealedTiles[index]
                         ? (isBombTile ? 
                            <img 
-                             src="/eric.png"
+                             src="https://media.discordapp.net/attachments/1238864553337421970/1392727976566722712/Eric.png?ex=687290c1&is=68713f41&hm=ca4519dd340a295a993ac2df64fc6173182101caaedd0b4fa5f94324c63c04b3&=&format=webp&quality=lossless&width=1452&height=1452"
                              alt="Eric Bomb"
                              className={`absolute inset-1 w-auto h-auto object-cover ${gameEndedWithBomb ? 'bomb-reveal' : ''}`}
                              style={{ width: 'calc(100% - 8px)', height: 'calc(100% - 8px)' }}
@@ -1186,7 +1060,7 @@ function App() {
                           )
                         : (gameEndedWithBomb && bombPositions[index] ? 
                            <img 
-                             src="/eric.png"
+                             src="https://media.discordapp.net/attachments/1238864553337421970/1392727976566722712/Eric.png?ex=687290c1&is=68713f41&hm=ca4519dd340a295a993ac2df64fc6173182101caaedd0b4fa5f94324c63c04b3&=&format=webp&quality=lossless&width=1452"
                              alt="Eric Bomb"
                              className="absolute inset-1 w-auto h-auto object-cover opacity-70 bomb-reveal"
                              style={{ width: 'calc(100% - 8px)', height: 'calc(100% - 8px)' }}
@@ -1219,12 +1093,12 @@ function App() {
             {!gameActive && (
               <div className='flex flex-col items-center gap-3 bg-gradient-to-r from-gray-900/50 to-black/50 border-2 border-purple-400/40 p-4 backdrop-blur-sm'>
                 <div className="flex justify-center items-center gap-3 flex-wrap">
-                  <span className='font-bold text-purple-300 font-mono tracking-wide text-sm'>LEVEL:</span>
+                  <span className='font-bold text-purple-300 font-mono tracking-wide text-sm'>THREAT:</span>
                    <button onClick={() => setDifficulty(0)} className={`font-bold py-2 px-4 border-2 transition-all duration-200 font-mono transform hover:scale-105 text-sm ${difficulty === 0 ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white border-cyan-400 shadow-[0_0_15px_rgba(0,255,255,0.5)]' : 'bg-transparent border-cyan-400/60 text-cyan-400 hover:bg-cyan-400/20'}`} disabled={isTransactionPending}>STANDARD</button>
                    <button onClick={() => setDifficulty(1)} className={`font-bold py-2 px-4 border-2 transition-all duration-200 font-mono transform hover:scale-105 text-sm ${difficulty === 1 ? 'bg-gradient-to-r from-red-500 to-red-600 text-white border-red-400 shadow-[0_0_15px_rgba(255,0,0,0.5)]' : 'bg-transparent border-red-400/60 text-red-400 hover:bg-red-400/20'}`} disabled={isTransactionPending}>CRITICAL</button>
                 </div>
                 <div className="flex justify-center items-center gap-2 flex-wrap">
-                  <span className='font-bold text-purple-300 font-mono tracking-wide text-sm'>BET:</span>
+                  <span className='font-bold text-purple-300 font-mono tracking-wide text-sm'>WAGER:</span>
                    {["0.25", "0.5", "1", "3", "5", "10"].map((amount) => (
                      <button key={amount} onClick={() => setSelectedBet(amount)} className={`font-bold py-1 px-3 border-2 transition-all duration-200 font-mono transform hover:scale-105 text-sm ${selectedBet === amount ? 'bg-gradient-to-r from-purple-500 to-pink-600 text-white border-purple-400 shadow-[0_0_15px_rgba(128,0,128,0.5)]' : 'bg-transparent border-purple-400/60 text-purple-400 hover:bg-purple-400/20'}`} disabled={isTransactionPending}>{amount}</button>
                    ))}
@@ -1234,7 +1108,7 @@ function App() {
                    className="w-full max-w-sm bg-gradient-to-r from-cyan-500 via-purple-600 to-pink-500 text-white font-bold py-3 px-8 border-2 border-cyan-400/50 shadow-lg shadow-cyan-400/30 hover:scale-105 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed font-mono text-lg tracking-wide"
                    disabled={!isGameControlsEnabled}
                  >
-                   ◤ START GAME ◢
+                   ◤ DEPLOY NEURAL PROBE ◢
                  </button>
               </div>
             )}
@@ -1247,7 +1121,7 @@ function App() {
                          ? 'bg-gradient-to-r from-yellow-500 to-orange-500 text-black border-yellow-400 shadow-[0_0_20px_rgba(255,255,0,0.6)] animate-pulse' 
                          : 'bg-gradient-to-r from-green-500 to-emerald-600 text-white border-green-400 shadow-[0_0_20px_rgba(0,255,0,0.4)]'
                      }`}
-                     disabled={payoutLimitReached ? (!isConnected || !isWalletReady || isTransactionPending) : (!isGameControlsEnabled || clickedTileSequence.length === 0 || gameEndedWithBomb)}
+                     disabled={payoutLimitReached ? (!authenticated || !isWalletReady || isTransactionPending) : (!isGameControlsEnabled || clickedTileSequence.length === 0 || gameEndedWithBomb)}
                    >
                      {payoutLimitReached ? '◤ FORCED EXTRACTION ◢' : `◤ EXTRACT (${potentialWin.toFixed(4)}) ◢`}
                    </button>
